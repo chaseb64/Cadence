@@ -1,0 +1,37 @@
+services:
+  cadence:
+    image: ${CADENCE_IMAGE:-ghcr.io/chaseb64/cadence:main}
+    platform: linux/amd64
+    network_mode: host
+    init: true
+    restart: "no"
+    stop_grace_period: 25s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      CADENCE_PROVIDER: soloist
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      DISCORD_TEXT_CHANNEL_ID: ${DISCORD_TEXT_CHANNEL_ID}
+      DISCORD_TOKEN_FILE: /run/secrets/discord_token
+      SPOTIFY_DEVICE_NAME: Cadence
+      CADENCE_DATA_DIR: /data
+      SOLOIST_WS: ws://127.0.0.1:9090
+    volumes:
+      - cadence-data:/data
+      - soloist-data:/soloist-data
+      - ${CADENCE_SECRETS_DIR}/discord-token:/run/secrets/discord_token:ro
+      - ${CADENCE_SECRETS_DIR}/soloist-key:/run/secrets/soloist_key:ro
+      - ${CADENCE_SECRETS_DIR}/soloist:/opt/soloist/soloist:ro
+    mem_limit: 1g
+    cpus: 2.0
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+volumes:
+  cadence-data:
+  soloist-data:

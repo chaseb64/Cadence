@@ -320,6 +320,9 @@ fn select_connect_credentials(
 }
 #[async_trait]
 impl AudioProvider for Spotify {
+    fn shutdown(&self) {
+        Spotify::shutdown(self);
+    }
     async fn pause(&self) -> Result<()> {
         self.ensure_running()?;
         self.spirc.pause()?;

@@ -554,7 +554,7 @@ async fn run_session(
 async fn main() -> Result<()> {
     // Keep dependency debug/trace disabled: some clients log credential-bearing data.
     tracing_subscriber::fmt()
-        .with_env_filter("cadence=info,serenity=warn,songbird=warn,librespot=off,librespot_playback::player=error")
+        .with_env_filter("cadence=info,serenity=warn,songbird=warn,librespot=off,librespot_playback::player=warn,librespot_core::audio_key=error")
         .init();
     let config = Arc::new(Config::load()?);
     let _session_lock = cadence::session::claim(&config.data_dir)?;

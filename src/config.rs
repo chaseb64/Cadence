@@ -5,7 +5,6 @@ use std::{env, path::PathBuf};
 pub struct Config {
     pub discord_token: String,
     pub guild_id: u64,
-    pub voice_channel_id: u64,
     pub text_channel_id: u64,
     pub data_dir: PathBuf,
     pub spotify_auth_file: PathBuf,
@@ -43,7 +42,6 @@ impl Config {
         Ok(Self {
             discord_token,
             guild_id: id("DISCORD_GUILD_ID")?,
-            voice_channel_id: id("DISCORD_VOICE_CHANNEL_ID")?,
             text_channel_id: id("DISCORD_TEXT_CHANNEL_ID")?,
             data_dir: env::var("CADENCE_DATA_DIR")
                 .unwrap_or_else(|_| "/data".into())

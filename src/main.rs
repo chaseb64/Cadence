@@ -3,14 +3,14 @@ use cadence::{
     audio::{AudioPipe, CHANNELS, SAMPLE_RATE},
     config::Config,
     provider::{AudioProvider, PlaybackEvent},
-    session::{Session, can_control},
+    session::{Session, can_control, join_target},
     spotify::Spotify,
 };
 use serenity::{all::*, async_trait};
 use songbird::{SerenityInit, input::RawAdapter};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::{
     sync::{Mutex, Semaphore, mpsc},
@@ -26,12 +26,20 @@ struct Handler {
     display: Arc<Mutex<Option<MessageId>>>,
     control_slot: Semaphore,
     stopping: tokio::sync::watch::Receiver<bool>,
+    requested_voice: Arc<AtomicU64>,
+    audio_started: AtomicBool,
 }
 
 struct VoiceFailure(mpsc::Sender<&'static str>);
 #[async_trait]
 impl songbird::EventHandler for VoiceFailure {
-    async fn act(&self, _: &songbird::EventContext<'_>) -> Option<songbird::Event> {
+    async fn act(&self, event: &songbird::EventContext<'_>) -> Option<songbird::Event> {
+        // Changing channels deliberately also emits a disconnect event.
+        if let songbird::EventContext::DriverDisconnect(data) = event
+            && data.reason.is_none()
+        {
+            return None;
+        }
         let _ = self.0.try_send("Discord voice/audio disconnected");
         None
     }
@@ -39,16 +47,8 @@ impl songbird::EventHandler for VoiceFailure {
 
 impl Handler {
     async fn setup(&self, ctx: &serenity::client::Context) -> Result<()> {
+        let _permit = self.control_slot.acquire().await?;
         let cfg = &self.config;
-        let voice = ChannelId::new(cfg.voice_channel_id)
-            .to_channel(&ctx.http)
-            .await?
-            .guild()
-            .context("Configured voice channel is not a server channel")?;
-        anyhow::ensure!(
-            voice.guild_id.get() == cfg.guild_id && voice.kind == ChannelType::Voice,
-            "Configure a normal voice channel in DISCORD_GUILD_ID"
-        );
         let text = ChannelId::new(cfg.text_channel_id)
             .to_channel(&ctx.http)
             .await?
@@ -98,35 +98,24 @@ impl Handler {
         GuildId::new(cfg.guild_id)
             .create_command(&ctx.http, command)
             .await?;
-        let manager = songbird::get(ctx)
-            .await
-            .context("Voice manager unavailable")?;
-        let call = timeout(
-            Duration::from_secs(30),
-            manager.join(
-                GuildId::new(cfg.guild_id),
-                ChannelId::new(cfg.voice_channel_id),
-            ),
-        )
-        .await
-        .context("Voice connection timed out")??;
-        let mut call = call.lock().await;
-        call.add_global_event(
-            songbird::Event::Core(songbird::CoreEvent::DriverDisconnect),
-            VoiceFailure(self.failures.clone()),
-        );
-        call.add_global_event(
-            songbird::Event::Track(songbird::TrackEvent::Error),
-            VoiceFailure(self.failures.clone()),
-        );
-        call.play_only_input(RawAdapter::new(self.pipe.clone(), SAMPLE_RATE, CHANNELS).into());
-        drop(call);
+        GuildId::new(cfg.guild_id)
+            .create_command(
+                &ctx.http,
+                CreateCommand::new("join").description("Join your current voice channel"),
+            )
+            .await?;
+        let requested_voice = self.requested_voice.load(Ordering::SeqCst);
+        if requested_voice != 0 {
+            self.connect_voice(ctx, ChannelId::new(requested_voice))
+                .await?;
+        }
         let channel = ChannelId::new(cfg.text_channel_id);
         let record = cfg.data_dir.join("now-playing.json");
         let previous = std::fs::read(&record)
             .ok()
             .and_then(|data| serde_json::from_slice::<(u64, u64)>(&data).ok());
-        let content = "Cadence connected. Select Cadence in Spotify to begin. Audio is experimental until you hear it here.";
+        let content =
+            "Cadence ready. Join a voice channel and use /join, then select Cadence in Spotify.";
         let mut message_id = None;
         if let Some((channel_id, id)) = previous
             && channel_id == cfg.text_channel_id
@@ -165,34 +154,132 @@ impl Handler {
             serde_json::to_vec(&(cfg.text_channel_id, id.get()))?,
         )?;
         *self.display.lock().await = Some(id);
-        tracing::info!("Discord voice connected; audible playback is not yet verified");
+        tracing::info!("Discord ready; use /join from a voice channel");
         Ok(())
     }
-    fn authorized(
+    async fn connect_voice(
+        &self,
+        ctx: &serenity::client::Context,
+        target: ChannelId,
+    ) -> Result<()> {
+        let cfg = &self.config;
+        let voice = target
+            .to_channel(&ctx.http)
+            .await?
+            .guild()
+            .context("Target is not a server voice channel")?;
+        anyhow::ensure!(
+            voice.guild_id.get() == cfg.guild_id && voice.kind == ChannelType::Voice,
+            "Join a normal voice channel in this server; Stage channels are not supported"
+        );
+        let manager = songbird::get(ctx)
+            .await
+            .context("Voice manager unavailable")?;
+        self.pipe.clear();
+        let joined = timeout(
+            Duration::from_secs(30),
+            manager.join(GuildId::new(cfg.guild_id), target),
+        )
+        .await;
+        let call = match joined {
+            Ok(Ok(call)) => call,
+            error => {
+                self.requested_voice.store(0, Ordering::SeqCst);
+                let _ = timeout(
+                    Duration::from_secs(3),
+                    manager.remove(GuildId::new(cfg.guild_id)),
+                )
+                .await;
+                self.audio_started.store(false, Ordering::SeqCst);
+                self.pipe.clear();
+                return match error {
+                    Err(_) => Err(anyhow::anyhow!(
+                        "Voice connection timed out; check Connect/Speak permissions and try /join again"
+                    )),
+                    Ok(Err(error)) => Err(anyhow::anyhow!(
+                        "Could not join your voice channel: {error}. Check View Channel, Connect and Speak permissions"
+                    )),
+                    Ok(Ok(_)) => unreachable!(),
+                };
+            }
+        };
+        let mut call = call.lock().await;
+        if !self.audio_started.swap(true, Ordering::SeqCst) {
+            call.add_global_event(
+                songbird::Event::Core(songbird::CoreEvent::DriverDisconnect),
+                VoiceFailure(self.failures.clone()),
+            );
+            call.add_global_event(
+                songbird::Event::Track(songbird::TrackEvent::Error),
+                VoiceFailure(self.failures.clone()),
+            );
+            call.play_only_input(RawAdapter::new(self.pipe.clone(), SAMPLE_RATE, CHANNELS).into());
+        }
+        drop(call);
+        self.requested_voice.store(target.get(), Ordering::SeqCst);
+        tracing::info!("Discord voice joined; audible playback still needs verification");
+        Ok(())
+    }
+    fn user_voice(
         &self,
         ctx: &serenity::client::Context,
         guild: Option<GuildId>,
         user: UserId,
-    ) -> bool {
-        let voice = guild
+    ) -> Option<u64> {
+        guild
             .and_then(|id| {
                 ctx.cache
                     .guild(id)
                     .and_then(|g| g.voice_states.get(&user).and_then(|v| v.channel_id))
             })
-            .map(|id| id.get());
-        can_control(
-            self.config.guild_id,
-            self.config.voice_channel_id,
-            guild.map(|g| g.get()),
-            voice,
-        )
+            .map(|id| id.get())
     }
-    async fn control(&self, action: &str, track: Option<&str>) -> Result<String> {
+    async fn dispatch(
+        &self,
+        ctx: &serenity::client::Context,
+        guild: Option<GuildId>,
+        user: UserId,
+        action: &str,
+        track: Option<&str>,
+    ) -> Result<String> {
         let _permit = self
             .control_slot
             .try_acquire()
             .context("Another control request is running; try again shortly")?;
+        anyhow::ensure!(
+            !*self.stopping.borrow(),
+            "Cadence is reconnecting; try again shortly"
+        );
+        let user_voice = self.user_voice(ctx, guild, user);
+        if action == "join" {
+            let target = join_target(self.config.guild_id, guild.map(|id| id.get()), user_voice)?;
+            let mut stopping = self.stopping.clone();
+            tokio::select! {
+                result = self.connect_voice(ctx, ChannelId::new(target)) => result?,
+                _ = stopping.changed() => bail!("Cadence is reconnecting; try /join again shortly"),
+            }
+            return Ok(format!(
+                "Joined <#{target}>. Select Cadence in Spotify to play music."
+            ));
+        }
+        let manager = songbird::get(ctx)
+            .await
+            .context("Voice manager unavailable")?;
+        let bot_voice = if let Some(call) = manager.get(GuildId::new(self.config.guild_id)) {
+            call.lock().await.current_channel().map(|id| id.0.get())
+        } else {
+            None
+        };
+        anyhow::ensure!(
+            self.audio_started.load(Ordering::SeqCst)
+                && can_control(
+                    self.config.guild_id,
+                    bot_voice,
+                    guild.map(|id| id.get()),
+                    user_voice
+                ),
+            "Join Cadence's voice channel to use these controls. Use /join to bring Cadence to you"
+        );
         match action {
             "pause" => {
                 self.provider.pause().await?;
@@ -249,23 +336,25 @@ impl EventHandler for Handler {
     }
     async fn interaction_create(&self, ctx: serenity::client::Context, interaction: Interaction) {
         match interaction {
-            Interaction::Command(command) if command.data.name == "cadence" => {
-                if !self.authorized(&ctx, command.guild_id, command.user.id) {
-                    let _ = command.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Join Cadence’s configured voice channel to use these controls.").ephemeral(true))).await;
-                    return;
-                }
+            Interaction::Command(command)
+                if matches!(command.data.name.as_str(), "cadence" | "join") =>
+            {
                 if command.defer_ephemeral(&ctx.http).await.is_err() {
                     return;
                 }
                 let action = command.data.options.first();
-                let name = action.map(|o| o.name.as_str()).unwrap_or("");
+                let name = if command.data.name == "join" {
+                    "join"
+                } else {
+                    action.map(|o| o.name.as_str()).unwrap_or("")
+                };
                 let track = action.and_then(|o| match &o.value {
                     CommandDataOptionValue::SubCommand(options) => {
                         options.first().and_then(|v| v.value.as_str())
                     }
                     _ => None,
                 });
-                let result = self.control(name, track).await.unwrap_or_else(|e| format!("Couldn’t complete that request: {e}. If an add timed out, check Spotify before trying again."));
+                let result = self.dispatch(&ctx, command.guild_id, command.user.id, name, track).await.unwrap_or_else(|e| format!("Couldn’t complete that request: {e}. If an add timed out, check Spotify before trying again."));
                 let _ = command
                     .edit_response(
                         &ctx.http,
@@ -278,15 +367,14 @@ impl EventHandler for Handler {
             Interaction::Component(component)
                 if component.data.custom_id.starts_with("cadence:") =>
             {
-                if !self.authorized(&ctx, component.guild_id, component.user.id) {
-                    let _ = component.create_response(&ctx.http, CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content("Join Cadence’s configured voice channel to use these controls.").ephemeral(true))).await;
-                    return;
-                }
                 if component.defer_ephemeral(&ctx.http).await.is_err() {
                     return;
                 }
                 let result = self
-                    .control(
+                    .dispatch(
+                        &ctx,
+                        component.guild_id,
+                        component.user.id,
                         component.data.custom_id.trim_start_matches("cadence:"),
                         None,
                     )
@@ -337,6 +425,7 @@ fn safe_text(s: &str) -> String {
 async fn run_session(
     config: Arc<Config>,
     stop: &mut tokio::sync::watch::Receiver<bool>,
+    requested_voice: Arc<AtomicU64>,
 ) -> Result<()> {
     if *stop.borrow() {
         return Ok(());
@@ -365,6 +454,8 @@ async fn run_session(
         display: display.clone(),
         control_slot: Semaphore::new(1),
         stopping: stopping_rx,
+        requested_voice,
+        audio_started: AtomicBool::new(false),
     };
     let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_VOICE_STATES;
     let voice_manager = songbird::Songbird::serenity();
@@ -396,7 +487,7 @@ async fn run_session(
             _ = &mut spotify_task => { spotify_done = true; break Err(anyhow::anyhow!("Spotify connection stopped")); }
             Some(reason) = failures.recv() => { break Err(anyhow::anyhow!(reason)); }
             _ = ticker.tick() => {
-                let content = format!("**Cadence · {state}**\n{}\nManage songs in Spotify or use `/cadence add` and `/cadence queue`.", safe_text(&title));
+                let content = format!("**Cadence · {state}**\n{}\nUse `/join` from your voice channel. Manage songs in Spotify or use `/cadence add` and `/cadence queue`.", safe_text(&title));
                 if previous != content && let Some(id) = *display.lock().await {
                         match ChannelId::new(config.text_channel_id).edit_message(&http,id,EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons())).await {
                             Ok(_) => previous = content,
@@ -457,6 +548,7 @@ async fn main() -> Result<()> {
     let config = Arc::new(Config::load()?);
     let _session_lock = cadence::session::claim(&config.data_dir)?;
     let mut session = Session::default();
+    let requested_voice = Arc::new(AtomicU64::new(0));
     // Signal handling covers both local Ctrl+C and Docker's SIGTERM.
     let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
@@ -475,7 +567,7 @@ async fn main() -> Result<()> {
     });
     loop {
         session.begin();
-        let result = run_session(config.clone(), &mut stop_rx).await;
+        let result = run_session(config.clone(), &mut stop_rx, requested_voice.clone()).await;
         session.end();
         if *stop_rx.borrow() {
             return Ok(());

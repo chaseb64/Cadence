@@ -2,7 +2,7 @@
 
 Status: NOT RUN. Do not mark Spotify supported until live evidence is recorded.
 
-Local Windows validation completed: formatting and Clippy passed; all 11 Rust tests and 2 Python OAuth tests passed. Tests cover ownership, channel permissions, stale session state, bounded retries, request cancellation, buffer backpressure/flush/close, PCM format, track-link validation, and OAuth state/PKCE. Container build and live service tests remain pending.
+Local Windows validation completed: formatting and Clippy passed; all 12 Rust tests and 2 Python OAuth tests passed. Tests cover ownership, channel permissions, /join target selection, stale session state, bounded retries, request cancellation, buffer backpressure/flush/close, PCM format, track-link validation, and OAuth state/PKCE. Container build and live service tests remain pending.
 
 | Item | Result |
 | --- | --- |
@@ -19,6 +19,6 @@ Local Windows validation completed: formatting and Clippy passed; all 11 Rust te
 | Transfer away/back | Not run |
 | Restart / cached auth | Not run |
 | Network / voice reconnect / SIGTERM | Not run |
-| Voice-channel control restrictions | Not run |
+| /join: initial join, channel move, missing voice, and control restrictions | Not run |
 
 Record dates, image digest, sanitized error categories, and human listening confirmation. Never paste credentials, authorization URLs, or tokens here.

@@ -81,11 +81,23 @@ impl Session {
 
 pub fn can_control(
     configured_guild: u64,
-    configured_voice: u64,
+    bot_voice: Option<u64>,
     guild: Option<u64>,
     voice: Option<u64>,
 ) -> bool {
-    guild == Some(configured_guild) && voice == Some(configured_voice)
+    guild == Some(configured_guild) && bot_voice.is_some() && voice == bot_voice
+}
+
+pub fn join_target(
+    configured_guild: u64,
+    guild: Option<u64>,
+    user_voice: Option<u64>,
+) -> Result<u64> {
+    anyhow::ensure!(
+        guild == Some(configured_guild),
+        "Use /join in Cadence's configured server"
+    );
+    user_voice.context("Join a voice channel first, then use /join")
 }
 
 #[cfg(test)]
@@ -161,10 +173,21 @@ mod tests {
         );
     }
     #[test]
-    fn everyone_in_the_configured_channel_can_control() {
-        assert!(can_control(1, 2, Some(1), Some(2)));
-        assert!(!can_control(1, 2, Some(3), Some(2)));
-        assert!(!can_control(1, 2, Some(1), None));
-        assert!(!can_control(1, 2, Some(1), Some(4)));
+    fn controls_move_with_the_bot_and_require_a_voice_connection() {
+        assert!(can_control(1, Some(2), Some(1), Some(2)));
+        assert!(!can_control(1, Some(2), Some(3), Some(2)));
+        assert!(!can_control(1, Some(2), Some(1), None));
+        assert!(!can_control(1, Some(2), Some(1), Some(4)));
+        assert!(!can_control(1, None, Some(1), None));
+        assert!(!can_control(1, Some(4), Some(1), Some(2)));
+        assert!(can_control(1, Some(4), Some(1), Some(4)));
+    }
+    #[test]
+    fn join_uses_the_callers_channel_and_rejects_dms_or_other_servers() {
+        assert_eq!(join_target(1, Some(1), Some(2)).unwrap(), 2);
+        assert_eq!(join_target(1, Some(1), Some(3)).unwrap(), 3);
+        assert!(join_target(1, Some(1), None).is_err());
+        assert!(join_target(1, None, Some(2)).is_err());
+        assert!(join_target(1, Some(7), Some(2)).is_err());
     }
 }

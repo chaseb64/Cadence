@@ -1,15 +1,15 @@
 # Cadence
 
-A self-hosted Spotify Connect → Discord music bot inspired by [Aoede](https://github.com/codetheweb/aoede). Select **Cadence** in Spotify and listen in one configured Discord voice channel. It never follows a person between channels.
+A self-hosted Spotify Connect → Discord music bot inspired by [Aoede](https://github.com/codetheweb/aoede). Join a Discord voice channel, use `/join`, then select **Cadence** in Spotify. Cadence stays in that channel until another `/join`; it never follows a person automatically.
 
 **Status: experimental feasibility implementation. Actual Spotify audio and DAVE playback on the NAS have not been verified.** Login, device discovery, or a voice connection alone does not prove audio works.
 
 ## First version
 
-- One Spotify Premium account, one Discord server, one fixed voice channel.
+- One Spotify Premium account, one Discord server, one listening session at a time. `/join` finds your current voice channel and joins or moves Cadence there.
 - One shared Spotify queue. Add tracks from Spotify or `/cadence add` in Discord. `/cadence queue` lists up to ten upcoming tracks. Removal/reordering and track-name search are outside this version.
 - One updating Discord now-playing message with pause, resume, skip, and queue buttons.
-- Everyone currently in the configured voice channel can control it. Other channels and DMs are rejected. Controls are serialized; concurrent requests receive a busy response.
+- Everyone currently in Cadence's voice channel can control it. Anyone in the configured server can use `/join` to summon it to their voice channel. Other channels and DMs are rejected. Controls are serialized; concurrent requests receive a busy response.
 - Docker image for **linux/amd64**, targeting your Intel N100 UGreen DXP2800, deployed through Portainer on standalone Docker.
 
 ## Spotify limitations
@@ -26,7 +26,7 @@ The provider requests 320 kbps source audio, then Discord receives re-encoded Op
 
 Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications). Invite it with `bot` and `applications.commands` scopes. Grant View Channel, Connect, Speak, Send Messages, Read Message History, and Use Application Commands as appropriate. No privileged intents or Message Content intent are needed. Never use a user token.
 
-Choose one **normal voice channel** and one **normal text channel**. Stages and threads are outside this version. Enable Discord Developer Mode to copy the server and channel IDs. Store the bot token in a private file named `discord-token`, containing only the token. Do not put it in GitHub, Compose, or chat.
+Choose one **normal text channel** for now-playing messages. Cadence joins a **normal voice channel** when you use `/join`. Stages and threads are outside this version. Enable Discord Developer Mode to copy the server ID and now-playing text-channel ID. No voice-channel ID is required. Give the bot View Channel, Connect, and Speak permissions in any voice channel where you plan to summon it. Store the bot token in a private file named `discord-token`, containing only the token. Do not put it in GitHub, Compose, or chat.
 
 ### 2. Browser sign-in on your PC
 
@@ -50,7 +50,7 @@ If Spotify refuses your app, scopes, or account, record a feasibility failure. D
 
 ### 3. GitHub image build
 
-Push this folder to your repository on `main` or `master`. The included workflow runs format checks, Clippy, Rust tests, and Python OAuth tests on Linux, then builds an amd64 image. Successful branch/tag/manual builds publish to `ghcr.io/<owner>/<repository>` using the workflow's `GITHUB_TOKEN`. Pull requests do not publish. Nothing has been uploaded from this workspace; the workflow takes effect when you push it.
+Push this folder to your repository on `main` or `master`. The included workflow runs format checks, Clippy, Rust tests, and Python OAuth tests on Linux, then builds an amd64 image. Successful branch/tag/manual builds publish to `ghcr.io/<owner>/<repository>` using the workflow's `GITHUB_TOKEN`. Pull requests do not publish. The project is published at https://github.com/chaseb64/Cadence; pushes trigger the image workflow.
 
 Allow Actions to write packages. Making the container package public simplifies pulling it from Portainer; package visibility is separate from repository visibility. For a private package, configure Portainer's GHCR registry credentials with package read access. Prefer an immutable generated `sha-…` tag over the changing `main` tag.
 
@@ -83,26 +83,25 @@ In Portainer's **local Docker environment → Stacks → Add stack**, paste `com
 | `CADENCE_IMAGE` | `ghcr.io/<lowercase-owner>/<lowercase-repository>:<tested-tag>` |
 | `CADENCE_SECRETS_DIR` | Absolute NAS directory containing the two private files |
 | `DISCORD_GUILD_ID` | Server ID |
-| `DISCORD_VOICE_CHANNEL_ID` | Fixed voice channel ID |
 | `DISCORD_TEXT_CHANNEL_ID` | Now-playing text channel ID |
 
 Deploy and inspect container logs. No inbound ports, host networking, NAS audio device, or privileged container is required. Allow outbound HTTPS/WebSocket and Discord voice UDP. This implementation authenticates Connect to the account and does not advertise using LAN mDNS; discovery in your intended Spotify clients is a feasibility check.
 
 A named volume stores the stable device ID, Connect credentials, and working OAuth token. Keep backups private. The OAuth seed is copied only on first start; its writable copy updates when the token rotates. To reauthenticate, stop the stack and deliberately replace `/data/oauth.json` with the new seed; stale `/data/credentials.json` may also need removal. Do not delete the volume to update the image.
 
-The container runs without root, with a read-only root filesystem, dropped capabilities, and bounded temporary storage. The data directory is private. Dependency debug logs are disabled. Docker restart is off during feasibility: Cadence allows five session reconnects (1/2/4/8/16-second backoff), then exits visibly. Inspect errors before restarting. SIGTERM and Ctrl+C cancel audio and clean up the gateway.
+The container runs without root, with a read-only root filesystem, dropped capabilities, and bounded temporary storage. The data directory is private. Dependency debug logs are disabled. Docker restart is off during feasibility: Cadence allows five session reconnects (1/2/4/8/16-second backoff), then exits visibly. A reconnect within the running process tries the last channel requested through `/join`; a full container restart waits for a new `/join`. Inspect errors before restarting. SIGTERM and Ctrl+C cancel audio and clean up the gateway.
 
 ## Required feasibility test
 
 Run these checks on your NAS and record results in [docs/feasibility.md](docs/feasibility.md):
 
-1. Start Cadence, join its configured Discord voice channel, select Cadence in Spotify, and play several normal tracks. **Confirm audible, correctly paced music.** A Playing log is insufficient.
+1. Start Cadence, join a Discord voice channel, run `/join` in a server text channel, then select Cadence in Spotify and play several normal tracks. **Confirm audible, correctly paced music.** A Playing log is insufficient.
 2. Pause/resume and skip from Spotify and Discord. Check the now-playing display through track transitions.
 3. Add track A from Spotify and B via `/cadence add track:<Spotify URL>`. Inspect both queues; confirm each plays once in order. Discord shows a queue snapshot rather than maintaining another queue.
 4. Transfer Spotify playback to another device. Cadence must stop emitting old audio. Discord queue requests must reject until Cadence is selected again. Transfer back and test playback.
 5. Restart the container, including during a track. Check persistent identity and cached login.
 6. Interrupt networking briefly, test voice disconnect/reconnect, and stop during audio. Check bounded recovery, no hung process, and no old audio after reconnect. PCM buffering is capped at one second.
-7. Verify listeners in the configured channel can control Cadence and people outside it cannot.
+7. Use `/join` from a different voice channel and confirm Cadence moves there once, with no duplicated audio. Verify listeners in the new channel can control it and people in the old channel cannot. Leave voice and verify `/join` gives a helpful error. A container restart should wait for `/join` again.
 
 If audio fails, keep this experimental regardless of UI or authentication success.
 
@@ -117,7 +116,7 @@ cargo test --all-targets --locked
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-For native execution, set the three Discord IDs and private local paths for `DISCORD_TOKEN_FILE`, `SPOTIFY_AUTH_FILE`, and `CADENCE_DATA_DIR`, then `cargo run --locked`. Defaults use container paths.
+For native execution, set the server and text-channel IDs and private local paths for `DISCORD_TOKEN_FILE`, `SPOTIFY_AUTH_FILE`, and `CADENCE_DATA_DIR`, then `cargo run --locked`. Defaults use container paths.
 
 - `src/main.rs`: Discord validation, controls/display, task ownership, cancellation, and reconnect supervision. Reconnect creates fresh per-session handlers and event channels.
 - `src/provider.rs`: provider-independent controls and playback events. A replacement implements this interface and plugs into session construction; there is no plugin framework.

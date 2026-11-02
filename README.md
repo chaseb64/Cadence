@@ -10,7 +10,7 @@ A self-hosted Spotify Connect → Discord music bot inspired by [Aoede](https://
 - One shared Spotify queue. Add tracks from Spotify or `/cadence add` in Discord. `/cadence queue` lists up to ten upcoming tracks. Removal/reordering and track-name search are outside this version.
 - One updating Discord now-playing message with pause, resume, skip, and queue buttons.
 - Everyone currently in Cadence's voice channel can control it. Anyone in the configured server can use `/join` to summon it to their voice channel. Other channels and DMs are rejected. Controls are serialized; concurrent requests receive a busy response.
-- Docker images for **linux/amd64** and **linux/arm64**. The Intel N100 UGreen DXP2800 uses amd64; Portainer on standalone Docker selects the matching architecture.
+- Docker images for **linux/amd64**, targeting the Intel N100 UGreen DXP2800 and Portainer on standalone Docker.
 
 ## Spotify limitations
 
@@ -58,7 +58,7 @@ Complete the new Spotify browser approval. Librespot presents its supported Spot
 
 ### 3. GitHub image build
 
-Push this folder to your repository on `main` or `master`. The included workflow runs format checks, Clippy, Rust tests, and Python OAuth tests on Linux, then builds a multi-platform image for amd64 and arm64. Successful branch/tag/manual builds publish to `ghcr.io/<owner>/<repository>` using the workflow's `GITHUB_TOKEN`. Pull requests do not publish. The project is published at https://github.com/chaseb64/Cadence; pushes trigger the image workflow.
+Push this folder to your repository on `main` or `master`. The included workflow runs format checks, Clippy, Rust tests, and Python OAuth tests on Linux, then builds an amd64 image. Successful branch/tag/manual builds publish to `ghcr.io/<owner>/<repository>` using the workflow's `GITHUB_TOKEN`. Pull requests do not publish. The project is published at https://github.com/chaseb64/Cadence; pushes trigger the image workflow.
 
 Allow Actions to write packages. Making the container package public simplifies pulling it from Portainer; package visibility is separate from repository visibility. For a private package, configure Portainer's GHCR registry credentials with package read access. Prefer an immutable generated `sha-…` tag over the changing `main` tag.
 

@@ -22,4 +22,4 @@ The audio gate opens only while this device is active and playing. Paused, buffe
 
 The official player does not grant permission to redistribute Spotify audio. Spotify's platform-policy restrictions still apply. Follow the [Soloist documentation](https://developer.spotify.com/documentation/soloist) and [Spotify policy](https://developer.spotify.com/policy).
 
-Feasibility record: Soloist 1.3.10.33 (2026-11-02) on the DXP2800 accepted the user's paired Premium account and advanced tracks without the librespot skip loop. Audio capture, Discord audibility, and control behavior must be verified with the integrated image before declaring support.
+Feasibility record: Soloist 1.3.10.33 (2026-11-02) on the DXP2800 accepted the user's paired Premium account and advanced tracks without the librespot skip loop. On the integrated image, the user confirmed audible Spotify music in Discord. Pause/skip, queue controls, and the paused speaking indicator still need live verification.

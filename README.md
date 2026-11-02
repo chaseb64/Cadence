@@ -2,7 +2,7 @@
 
 A self-hosted Spotify Connect → Discord music bot inspired by [Aoede](https://github.com/codetheweb/aoede). Join a Discord voice channel, use `/join`, then select **Cadence** in Spotify. Cadence stays in that channel until another `/join`; it never follows a person automatically.
 
-**Status: experimental feasibility implementation. Soloist advances tracks normally on the NAS; audible Discord playback still requires verification.** The original librespot provider failed audio-key requests with this account. Login, device discovery, or a voice connection alone does not prove audio works.
+**Status: experimental feasibility implementation. Soloist playback is audible in Discord on the DXP2800 NAS with the intended Premium account; control and pause-indicator checks are ongoing.** The original librespot provider failed audio-key requests with this account. Login, device discovery, or a voice connection alone does not prove audio works.
 
 For the Soloist integration, follow [Soloist setup](docs/soloist.md) and use `compose.soloist.yaml`. The older librespot setup below remains available for comparison.
 

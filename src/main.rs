@@ -28,9 +28,22 @@ struct Handler {
     stopping: tokio::sync::watch::Receiver<bool>,
     requested_voice: Arc<AtomicU64>,
     audio_started: AtomicBool,
+    voice_track: Arc<std::sync::Mutex<Option<songbird::tracks::TrackHandle>>>,
+    playing: Arc<AtomicBool>,
 }
 
 struct VoiceFailure(mpsc::Sender<&'static str>);
+#[derive(Debug)]
+struct PlaybackUnavailable;
+impl std::fmt::Display for PlaybackUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Spotify could not load a track; restart after resolving the source problem"
+        )
+    }
+}
+impl std::error::Error for PlaybackUnavailable {}
 #[async_trait]
 impl songbird::EventHandler for VoiceFailure {
     async fn act(&self, event: &songbird::EventContext<'_>) -> Option<songbird::Event> {
@@ -224,7 +237,12 @@ impl Handler {
                 songbird::Event::Track(songbird::TrackEvent::Error),
                 VoiceFailure(self.failures.clone()),
             );
-            call.play_only_input(RawAdapter::new(self.pipe.clone(), SAMPLE_RATE, CHANNELS).into());
+            let track = call
+                .play_only_input(RawAdapter::new(self.pipe.clone(), SAMPLE_RATE, CHANNELS).into());
+            if !self.playing.load(Ordering::SeqCst) {
+                track.pause()?;
+            }
+            *self.voice_track.lock().unwrap() = Some(track);
         }
         drop(call);
         self.requested_voice.store(target.get(), Ordering::SeqCst);
@@ -454,6 +472,8 @@ async fn run_session(
         }
     };
     let display = Arc::new(Mutex::new(None));
+    let voice_track = Arc::new(std::sync::Mutex::new(None::<songbird::tracks::TrackHandle>));
+    let playing = Arc::new(AtomicBool::new(false));
     let (tx, mut failures) = mpsc::channel(8);
     let (stopping_tx, stopping_rx) = tokio::sync::watch::channel(false);
     let handler = Handler {
@@ -467,6 +487,8 @@ async fn run_session(
         stopping: stopping_rx,
         requested_voice,
         audio_started: AtomicBool::new(false),
+        voice_track: voice_track.clone(),
+        playing: playing.clone(),
     };
     let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_VOICE_STATES;
     let voice_manager = songbird::Songbird::serenity();
@@ -509,10 +531,15 @@ async fn run_session(
             event = events.recv() => {
                 match event {
                     Some(PlaybackEvent::Track { name }) => { title = name; }
-                    Some(PlaybackEvent::Playing) => { state = "Playing"; tracing::info!("Spotify reports playing; confirm audibility in Discord"); }
-                    Some(PlaybackEvent::Paused) => { state = "Paused"; pipe.clear(); }
-                    Some(PlaybackEvent::Stopped) => { state = "Idle"; pipe.clear(); }
-                    Some(PlaybackEvent::Unavailable) => { state = "Track unavailable"; pipe.clear(); }
+                    Some(PlaybackEvent::Playing) => { state = "Playing"; playing.store(true, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.play(); } tracing::info!("Spotify reports playing; confirm audibility in Discord"); }
+                    Some(PlaybackEvent::Paused) => { state = "Paused"; playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
+                    Some(PlaybackEvent::Stopped) => { state = "Idle"; playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
+                    Some(PlaybackEvent::Unavailable) => {
+                        pipe.clear();
+                        let _ = spotify.pause().await;
+                        tracing::error!("Spotify track unavailable; stopping session to prevent further skips");
+                        break Err(PlaybackUnavailable.into());
+                    }
                     None => { break Err(anyhow::anyhow!("Spotify player event stream closed")); }
                 }
             }
@@ -532,7 +559,9 @@ async fn run_session(
                 &http,
                 id,
                 EditMessage::new()
-                    .content("Cadence is offline or reconnecting.")
+                    .content(if result.as_ref().is_err_and(|e| e.is::<PlaybackUnavailable>()) {
+                        "**Cadence · Playback stopped**\nSpotify could not load this track. Cadence stopped to limit further skips; inspect the logs and restart after resolving the source problem."
+                    } else { "Cadence is offline or reconnecting." })
                     .components(Vec::new()),
             ),
         )
@@ -580,6 +609,12 @@ async fn main() -> Result<()> {
         session.begin();
         let result = run_session(config.clone(), &mut stop_rx, requested_voice.clone()).await;
         session.end();
+        if result
+            .as_ref()
+            .is_err_and(|e| e.is::<PlaybackUnavailable>())
+        {
+            return result;
+        }
         if *stop_rx.borrow() {
             return Ok(());
         }

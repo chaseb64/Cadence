@@ -21,10 +21,10 @@ def challenge(verifier):
     return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
 
 
-def validate_callback(path, expected_state):
+def validate_callback(path, expected_state, expected_path="/callback"):
     url = urllib.parse.urlsplit(path)
     params = urllib.parse.parse_qs(url.query)
-    if url.path != "/callback":
+    if url.path != expected_path:
         raise ValueError("Unexpected callback path")
     states = params.get("state", [])
     if len(states) != 1 or not secrets.compare_digest(states[0], expected_state):
@@ -37,7 +37,9 @@ def validate_callback(path, expected_state):
     return codes[0]
 
 
-def login(client_id, output):
+def login(client_id, output, redirect=REDIRECT, scopes=SCOPES):
+    if redirect not in (REDIRECT, "http://127.0.0.1:5588/login"):
+        raise ValueError("Only the supported local loopback redirects are allowed")
     if output.exists():
         raise ValueError("Output already exists. Move it aside before repeating sign-in.")
     verifier, state = secrets.token_urlsafe(64), secrets.token_urlsafe(32)
@@ -49,7 +51,7 @@ def login(client_id, output):
 
         def do_GET(self):
             try:
-                result["code"] = validate_callback(self.path, state)
+                result["code"] = validate_callback(self.path, state, urllib.parse.urlsplit(redirect).path)
                 status, message = 200, b"Cadence sign-in received. You can close this tab."
             except ValueError:
                 status, message = 400, b"Invalid sign-in callback. Return to the original sign-in tab."
@@ -60,7 +62,7 @@ def login(client_id, output):
             self.end_headers()
             self.wfile.write(message)
 
-    params = urllib.parse.urlencode({"client_id": client_id, "response_type": "code", "redirect_uri": REDIRECT, "scope": SCOPES, "state": state, "code_challenge_method": "S256", "code_challenge": challenge(verifier)})
+    params = urllib.parse.urlencode({"client_id": client_id, "response_type": "code", "redirect_uri": redirect, "scope": scopes, "state": state, "code_challenge_method": "S256", "code_challenge": challenge(verifier)})
     with http.server.HTTPServer(("127.0.0.1", 5588), Handler) as server:
         server.timeout = 1
         url = "https://accounts.spotify.com/authorize?" + params
@@ -72,7 +74,7 @@ def login(client_id, output):
             if time.monotonic() > deadline:
                 raise ValueError("Sign-in timed out")
             server.handle_request()
-    data = urllib.parse.urlencode({"grant_type": "authorization_code", "client_id": client_id, "code": result["code"], "redirect_uri": REDIRECT, "code_verifier": verifier}).encode()
+    data = urllib.parse.urlencode({"grant_type": "authorization_code", "client_id": client_id, "code": result["code"], "redirect_uri": redirect, "code_verifier": verifier}).encode()
     request = urllib.request.Request("https://accounts.spotify.com/api/token", data=data)
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
@@ -83,7 +85,7 @@ def login(client_id, output):
     if not refresh:
         raise ValueError("Spotify did not issue a refresh token")
     granted = set(token.get("scope", "").split())
-    if not set(SCOPES.split()).issubset(granted):
+    if not set(scopes.split()).issubset(granted):
         raise ValueError("Required Spotify permissions were not granted")
     output.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -97,8 +99,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client-id", required=True, help="Your Spotify developer app client ID (not a client secret)")
     parser.add_argument("--output", type=Path, default=Path("secrets/spotify.json"))
+    parser.add_argument("--redirect-uri", default=REDIRECT)
+    parser.add_argument("--scopes", default=SCOPES)
     args = parser.parse_args()
     try:
-        login(args.client_id, args.output)
+        login(args.client_id, args.output, args.redirect_uri, args.scopes)
     except (ValueError, OSError) as error:
         parser.exit(1, f"Sign-in failed: {error}\n")

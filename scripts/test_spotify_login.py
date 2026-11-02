@@ -3,6 +3,13 @@ from spotify_login import challenge, validate_callback
 
 
 class LoginTests(unittest.TestCase):
+    def test_connect_callback_checks_the_connect_path_and_state(self):
+        self.assertEqual(validate_callback("/login?state=expected&code=abc", "expected", "/login"), "abc")
+        with self.assertRaises(ValueError):
+            validate_callback("/callback?state=expected&code=abc", "expected", "/login")
+        with self.assertRaises(ValueError):
+            validate_callback("/login?state=wrong&code=abc", "expected", "/login")
+
     def test_pkce_rfc7636_vector(self):
         self.assertEqual(challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
 

@@ -18,6 +18,7 @@ use librespot::{
     },
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -132,12 +133,11 @@ impl Spotify {
             );
             save_auth(&auth_path, &seed)?;
         }
-        let auth: AuthFile = serde_json::from_slice(&std::fs::read(&auth_path)?)?;
         let device_path = data_dir.join("device-id");
-        let mut config = SessionConfig {
-            client_id: auth.client_id,
-            ..Default::default()
-        };
+        // The developer app ID belongs to OAuth/Web API requests. Connect's
+        // client-token/login5 protocol needs librespot's supported client config.
+        // Overriding that identity with the Web API app causes HTTP 400 failures.
+        let mut config = SessionConfig::default();
         if device_path.exists() {
             config.device_id = std::fs::read_to_string(&device_path)?.trim().to_owned();
         } else {
@@ -145,7 +145,14 @@ impl Spotify {
         }
         let device_id = config.device_id.clone();
         let cache = Cache::new(Some(data_dir), Some(data_dir), None, None)?;
-        let cached = cache.credentials();
+        let seed: serde_json::Value = serde_json::from_slice(&std::fs::read(auth_seed)?)?;
+        let seeded = connect_credentials(&seed)?;
+        let seed_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&seeded)?));
+        let marker = data_dir.join("connect-seed.sha256");
+        let same_seed = std::fs::read_to_string(&marker).is_ok_and(|saved| saved == seed_digest);
+        // A new browser grant replaces any credentials cached by an earlier,
+        // failed login. Existing caches remain useful after a successful grant.
+        let credentials = select_connect_credentials(cache.credentials(), seeded, same_seed);
         let session = Session::new(config, Some(cache));
         let mixer = Arc::new(SoftMixer::open(MixerConfig::default())?);
         let sink_pipe = pipe.clone();
@@ -168,7 +175,6 @@ impl Spotify {
             .timeout(Duration::from_secs(15))
             .build()?;
         let token = Self::refresh(&http, &auth_path).await?;
-        let credentials = cached.unwrap_or_else(|| Credentials::with_access_token(&token.value));
         let (spirc, task) = tokio::time::timeout(
             Duration::from_secs(60),
             Spirc::new(
@@ -184,7 +190,11 @@ impl Spotify {
         )
         .await
         .context("Spotify connection timed out")?
-        .context("Spotify session failed; authentication does not prove playback support")?;
+        .map_err(|error| {
+            let message = format!("Spotify Connect session failed ({}); repeat the Connect-specific sign-in if credentials were revoked", error.kind);
+            anyhow::Error::new(error).context(message)
+        })?;
+        std::fs::write(marker, seed_digest)?;
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(32);
         let task = tokio::spawn(async move {
             let forward = async move {
@@ -292,6 +302,22 @@ impl Spotify {
         Ok(())
     }
 }
+fn connect_credentials(seed: &serde_json::Value) -> Result<Credentials> {
+    let value = seed.get("connect_credentials").context("Spotify Connect sign-in is missing. Run cargo run --example spotify_connect_login --locked on your PC, then update the NAS Spotify credential file")?;
+    serde_json::from_value(value.clone())
+        .context("Invalid cached Spotify Connect credential format; repeat Connect sign-in")
+}
+fn select_connect_credentials(
+    cached: Option<Credentials>,
+    seeded: Credentials,
+    same_seed: bool,
+) -> Credentials {
+    if same_seed {
+        cached.unwrap_or(seeded)
+    } else {
+        seeded
+    }
+}
 #[async_trait]
 impl AudioProvider for Spotify {
     async fn pause(&self) -> Result<()> {
@@ -378,6 +404,35 @@ pub fn track_uri(input: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_new_connect_grant_replaces_stale_cached_credentials() {
+        let old = Credentials {
+            auth_data: vec![1],
+            ..Default::default()
+        };
+        let new = Credentials {
+            auth_data: vec![2],
+            ..Default::default()
+        };
+        assert_eq!(
+            select_connect_credentials(Some(old.clone()), new.clone(), false),
+            new
+        );
+        assert_eq!(
+            select_connect_credentials(Some(old.clone()), new.clone(), true),
+            old
+        );
+        assert_eq!(select_connect_credentials(None, new.clone(), true), new);
+    }
+    #[test]
+    fn web_api_tokens_are_never_used_as_connect_credentials() {
+        let web_only =
+            serde_json::json!({"client_id":"developer-app","refresh_token":"web-refresh"});
+        assert!(connect_credentials(&web_only).is_err());
+        let credentials = Credentials::default();
+        let combined = serde_json::json!({"client_id":"developer-app","refresh_token":"web-refresh","connect_credentials":credentials});
+        assert_eq!(connect_credentials(&combined).unwrap(), credentials);
+    }
     #[test]
     fn links_are_normalized_without_fetching_user_urls() {
         let id = "1234567890123456789012";

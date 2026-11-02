@@ -16,7 +16,7 @@ A self-hosted Spotify Connect → Discord music bot inspired by [Aoede](https://
 
 Spotify's Web API provides metadata/control rather than raw audio. Cadence evaluates the unofficial librespot client for actual audio. It requires Premium, and its authors warn about Spotify's terms. Spotify's Developer Policy prohibits relevant redistribution patterns, including one source played to simultaneous listeners. Premium does not establish redistribution permission. See [Spotify policy](https://developer.spotify.com/policy) and [librespot's disclaimer](https://github.com/librespot-org/librespot#disclaimer).
 
-OAuth with your developer app may succeed while Connect/audio fails; record that failure rather than bypassing it or declaring playback supported. Account, market, app access, and service changes affect availability. Queue read/add also require Web API access and playback scopes. There is no documented public operation for removing/reordering the live playback queue.
+The developer-app Web API grant and the Connect streaming grant are separate. OAuth with your developer app may succeed while Connect/audio fails; record that failure rather than bypassing it or declaring playback supported. Account, market, app access, and service changes affect availability. Queue read/add also require Web API access and playback scopes. There is no documented public operation for removing/reordering the live playback queue.
 
 The provider requests 320 kbps source audio, then Discord receives re-encoded Opus. This is not lossless. Unavailable songs remain unavailable; the integration does not remove ads for free accounts.
 
@@ -45,6 +45,14 @@ python scripts/spotify_login.py --client-id YOUR_SPOTIFY_APP_CLIENT_ID
 The client ID is public configuration; no client secret is needed. The helper opens your browser, binds only to PC loopback, verifies OAuth state, uses PKCE, and saves a refresh token to `secrets/spotify.json`. It expires after five minutes. Stop it with Ctrl+C if you decline sign-in. It does not log callback URLs or tokens. Required scopes: `streaming`, `user-read-playback-state`, and `user-modify-playback-state`.
 
 If Spotify refuses your app, scopes, or account, record a feasibility failure. Do not supply account passwords or substitute browser-session tokens. Development mode may require adding your account to the app's user allowlist; see [Spotify quota modes](https://developer.spotify.com/documentation/web-api/concepts/quota-modes).
+
+The developer-app grant above supports Web API controls. Spotify Connect audio requires a separate sign-in. With Rust and the build dependencies installed on your PC, run:
+
+```sh
+cargo run --example spotify_connect_login --locked
+```
+
+Complete the new Spotify browser approval. Librespot presents its supported Spotify desktop client identity, so the page can say **Spotify for Desktop**. Cadence is still unofficial. The helper authenticates once, obtains reusable Connect credentials, and adds them to `secrets/spotify.json` without printing them. Upload the updated JSON to the NAS. On later starts Cadence uses its protected cached Connect session separately from your developer-app OAuth token. If revoked, repeat this flow; do not substitute passwords or browser-session tokens.
 
 `secrets/` is ignored by Git and Docker. Restrict these files to your Windows account before transferring them. Sign-in alone does not establish audio support.
 
@@ -123,7 +131,9 @@ For native execution, set the server and text-channel IDs and private local path
 - `src/spotify.rs`: experimental librespot provider, credentials, token refresh, and Web API queue. Native events are translated into a bounded application event channel.
 - `src/audio.rs`: bounded PCM bridge, producer backpressure, underrun silence, flush, and cancellation that wakes blocked threads.
 - `src/session.rs`: volume ownership lock, cancellation of pending requests, control authorization, and bounded retry rules.
-- `scripts/spotify_login.py`: PC-side OAuth bootstrap.
+- `scripts/spotify_login.py`: PC-side OAuth PKCE bootstrap.
+- `examples/spotify_connect_login.rs`: separate Connect sign-in and secure credential packaging.
+- `examples/spotify_check.rs`: a single Connect-session check without Discord audio.
 
 Commit `Cargo.lock`. Librespot 0.8.0 currently needs `vergen` 9.0.6 locked to avoid an upstream trait-version conflict with 9.1.0. Songbird 0.6.1 includes DAVE support introduced in 0.6.0; live compatibility needs the NAS test. This pipeline uses no FFmpeg or NAS audio device.
 

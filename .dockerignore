@@ -1,0 +1,8 @@
+.git
+.tools
+target
+.env
+secrets
+data
+__pycache__
+scripts/__pycache__

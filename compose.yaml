@@ -1,0 +1,40 @@
+# For Portainer's standalone Docker environment. Fill variables in Stack settings.
+services:
+  cadence:
+    image: ${CADENCE_IMAGE:?Set CADENCE_IMAGE to the GitHub Container Registry image tag}
+    platform: linux/amd64
+    init: true
+    restart: "no" # Feasibility: surface exhausted retries instead of looping forever.
+    stop_grace_period: 20s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:?Set your server ID}
+      DISCORD_VOICE_CHANNEL_ID: ${DISCORD_VOICE_CHANNEL_ID:?Set the fixed voice channel ID}
+      DISCORD_TEXT_CHANNEL_ID: ${DISCORD_TEXT_CHANNEL_ID:?Set the now-playing text channel ID}
+      SPOTIFY_DEVICE_NAME: Cadence
+      DISCORD_TOKEN_FILE: /run/secrets/discord_token
+      SPOTIFY_AUTH_FILE: /run/secrets/spotify_auth
+      CADENCE_DATA_DIR: /data
+    volumes:
+      - cadence-data:/data
+    secrets:
+      - discord_token
+      - spotify_auth
+    mem_limit: 768m
+    cpus: 1.5
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+secrets:
+  discord_token:
+    file: ${CADENCE_SECRETS_DIR:?Set absolute NAS secrets directory}/discord-token
+  spotify_auth:
+    file: ${CADENCE_SECRETS_DIR:?Set absolute NAS secrets directory}/spotify.json
+volumes:
+  cadence-data:

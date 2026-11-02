@@ -1,0 +1,21 @@
+[package]
+name = "cadence"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Single-session Spotify Connect to Discord feasibility application"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+librespot = { version = "=0.8.0", default-features = false, features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serenity = { version = "=0.12.5", default-features = false, features = ["builder", "cache", "client", "gateway", "http", "model", "rustls_backend", "utils", "voice"] }
+songbird = "=0.6.1"
+symphonia = { version = "0.5", default-features = false }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

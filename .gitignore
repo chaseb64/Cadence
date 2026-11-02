@@ -1,0 +1,8 @@
+.tools/
+/target/
+.env
+/secrets/*
+!/secrets/.gitkeep
+/data/
+__pycache__/
+*.pyc

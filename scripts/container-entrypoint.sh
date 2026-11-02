@@ -10,7 +10,7 @@ mkdir -p "$XDG_RUNTIME_DIR" /soloist-data
 # Mount the official binary privately; do not redistribute it in the image.
 cp /opt/soloist/soloist /soloist-data/soloist
 chmod 700 /soloist-data/soloist
-pulseaudio --daemonize=yes --exit-idle-time=-1 --load='module-null-sink sink_name=cadence_test'
+pulseaudio --daemonize=yes --exit-idle-time=-1 --load='module-null-sink sink_name=cadence_test format=float32le rate=44100 channels=2 channel_map=front-left,front-right'
 /soloist-data/soloist --device-name "${SPOTIFY_DEVICE_NAME:-Cadence}" \
     --api-key "$(cat /run/secrets/soloist_key)" --data-dir /soloist-data \
     --cache-dir /tmp/soloist-cache --cache-size 100 --ws 127.0.0.1:9090 &

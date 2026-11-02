@@ -126,7 +126,11 @@ mod tests {
             io::{MediaSourceStream, MediaSourceStreamOptions},
         };
         let pipe = AudioPipe::default();
-        pipe.write_samples(&vec![0.25; 1764]).unwrap();
+        // Distinct left and right samples must survive the actual Songbird decoder.
+        let stereo: Vec<f64> = (0..1764)
+            .map(|i| if i % 2 == 0 { 0.25 } else { -0.5 })
+            .collect();
+        pipe.write_samples(&stereo).unwrap();
         let source = songbird::input::RawAdapter::new(pipe, SAMPLE_RATE, CHANNELS);
         let stream = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
         let mut reader =
@@ -139,6 +143,13 @@ mod tests {
         let decoded = decoder.decode(&packet).unwrap();
         assert_eq!(decoded.spec().rate, SAMPLE_RATE);
         assert!(decoded.frames() > 0);
+        if let symphonia::core::audio::AudioBufferRef::F32(samples) = decoded {
+            use symphonia::core::audio::Signal;
+            assert_eq!(samples.chan(0)[0], 0.25);
+            assert_eq!(samples.chan(1)[0], -0.5);
+        } else {
+            panic!("expected floating-point PCM");
+        }
     }
     #[test]
     fn close_releases_a_blocked_producer_and_stops_output() {

@@ -269,6 +269,8 @@ impl Handler {
             }
         };
         let mut call = call.lock().await;
+        // Music benefits from more bandwidth than Songbird's default 128 kbps.
+        call.set_bitrate(songbird::driver::Bitrate::Bits(192_000));
         if !self.audio_started.swap(true, Ordering::SeqCst) {
             call.add_global_event(
                 songbird::Event::Core(songbird::CoreEvent::DriverDisconnect),

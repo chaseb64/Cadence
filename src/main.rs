@@ -237,12 +237,15 @@ impl Handler {
                 songbird::Event::Track(songbird::TrackEvent::Error),
                 VoiceFailure(self.failures.clone()),
             );
-            let track = call
-                .play_only_input(RawAdapter::new(self.pipe.clone(), SAMPLE_RATE, CHANNELS).into());
+            // Configure before enqueueing: a play-then-pause command can emit audio first.
+            let mut slot = self.voice_track.lock().unwrap();
+            let mut source = songbird::tracks::Track::new(
+                RawAdapter::new(self.pipe.clone(), SAMPLE_RATE, CHANNELS).into(),
+            );
             if !self.playing.load(Ordering::SeqCst) {
-                track.pause()?;
+                source = source.pause();
             }
-            *self.voice_track.lock().unwrap() = Some(track);
+            *slot = Some(call.play_only(source));
         }
         drop(call);
         self.requested_voice.store(target.get(), Ordering::SeqCst);
@@ -461,7 +464,15 @@ async fn run_session(
     }
     let pipe = AudioPipe::default();
     let started = tokio::select! {
-        result = Spotify::start(&config.data_dir, &config.spotify_auth_file, config.device_name.clone(), pipe.clone()) => result,
+        result = async {
+            if config.soloist {
+                let (provider, events, task) = cadence::soloist::Soloist::start(pipe.clone()).await?;
+                Ok((provider as Arc<dyn AudioProvider>, events, task))
+            } else {
+                let (provider, events, task) = Spotify::start(&config.data_dir, &config.spotify_auth_file, config.device_name.clone(), pipe.clone()).await?;
+                Ok((provider as Arc<dyn AudioProvider>, events, task))
+            }
+        } => result,
         _ = stop.changed() => { pipe.close(); return Ok(()); }
     };
     let (spotify, mut events, mut spotify_task) = match started {

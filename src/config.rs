@@ -9,6 +9,7 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub spotify_auth_file: PathBuf,
     pub device_name: String,
+    pub soloist: bool,
 }
 
 pub fn snowflake(name: &str, value: &str) -> Result<u64> {
@@ -39,7 +40,13 @@ impl Config {
             (1..=64).contains(&device_name.chars().count()),
             "Device name must be 1–64 characters"
         );
+        let provider = env::var("CADENCE_PROVIDER").unwrap_or_else(|_| "librespot".into());
+        ensure!(
+            matches!(provider.as_str(), "soloist" | "librespot"),
+            "CADENCE_PROVIDER must be soloist or librespot"
+        );
         Ok(Self {
+            soloist: provider == "soloist",
             discord_token,
             guild_id: id("DISCORD_GUILD_ID")?,
             text_channel_id: id("DISCORD_TEXT_CHANNEL_ID")?,

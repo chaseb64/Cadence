@@ -2,7 +2,9 @@
 
 A self-hosted Spotify Connect → Discord music bot inspired by [Aoede](https://github.com/codetheweb/aoede). Join a Discord voice channel, use `/join`, then select **Cadence** in Spotify. Cadence stays in that channel until another `/join`; it never follows a person automatically.
 
-**Status: experimental feasibility implementation. Actual Spotify audio and DAVE playback on the NAS have not been verified.** Login, device discovery, or a voice connection alone does not prove audio works.
+**Status: experimental feasibility implementation. Soloist advances tracks normally on the NAS; audible Discord playback still requires verification.** The original librespot provider failed audio-key requests with this account. Login, device discovery, or a voice connection alone does not prove audio works.
+
+For the Soloist integration, follow [Soloist setup](docs/soloist.md) and use `compose.soloist.yaml`. The older librespot setup below remains available for comparison.
 
 ## First version
 
@@ -14,11 +16,11 @@ A self-hosted Spotify Connect → Discord music bot inspired by [Aoede](https://
 
 ## Spotify limitations
 
-Spotify's Web API provides metadata/control rather than raw audio. Cadence evaluates the unofficial librespot client for actual audio. It requires Premium, and its authors warn about Spotify's terms. Spotify's Developer Policy prohibits relevant redistribution patterns, including one source played to simultaneous listeners. Premium does not establish redistribution permission. See [Spotify policy](https://developer.spotify.com/policy) and [librespot's disclaimer](https://github.com/librespot-org/librespot#disclaimer).
+Spotify's Web API provides metadata/control rather than raw audio. Cadence supports a local Spotify Soloist audio provider and the original unofficial librespot provider. Soloist audio is captured from a private PulseAudio null-sink monitor, then re-encoded for Discord. It requires Premium, and its authors warn about Spotify's terms. Spotify's Developer Policy prohibits relevant redistribution patterns, including one source played to simultaneous listeners. Premium does not establish redistribution permission. See [Spotify policy](https://developer.spotify.com/policy) and [librespot's disclaimer](https://github.com/librespot-org/librespot#disclaimer).
 
 The developer-app Web API grant and the Connect streaming grant are separate. OAuth with your developer app may succeed while Connect/audio fails; record that failure rather than bypassing it or declaring playback supported. Account, market, app access, and service changes affect availability. Queue read/add also require Web API access and playback scopes. There is no documented public operation for removing/reordering the live playback queue.
 
-The provider requests 320 kbps source audio, then Discord receives re-encoded Opus. This is not lossless. Unavailable songs remain unavailable; the integration does not remove ads for free accounts.
+The librespot provider requests 320 kbps source audio. Soloist manages its own source quality. Discord receives re-encoded Opus. This is not lossless. Unavailable songs remain unavailable; the integration does not remove ads for free accounts.
 
 ## Setup
 

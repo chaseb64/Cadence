@@ -128,6 +128,31 @@ impl Handler {
                 CreateCommand::new("join").description("Join your current voice channel"),
             )
             .await?;
+        for (name, description) in [
+            ("pause", "Pause Spotify"),
+            ("resume", "Resume Spotify"),
+            ("skip", "Skip the current song"),
+            ("queue", "View upcoming songs"),
+        ] {
+            GuildId::new(cfg.guild_id)
+                .create_command(&ctx.http, CreateCommand::new(name).description(description))
+                .await?;
+        }
+        GuildId::new(cfg.guild_id)
+            .create_command(
+                &ctx.http,
+                CreateCommand::new("add")
+                    .description("Add a Spotify track to the shared queue")
+                    .add_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "track",
+                            "Spotify track URL or URI",
+                        )
+                        .required(true),
+                    ),
+            )
+            .await?;
         let requested_voice = self.requested_voice.load(Ordering::SeqCst);
         if requested_voice != 0 {
             self.connect_voice(ctx, ChannelId::new(requested_voice))
@@ -369,20 +394,26 @@ impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: serenity::client::Context, interaction: Interaction) {
         match interaction {
             Interaction::Command(command)
-                if matches!(command.data.name.as_str(), "cadence" | "join") =>
+                if matches!(
+                    command.data.name.as_str(),
+                    "cadence" | "join" | "pause" | "resume" | "skip" | "queue" | "add"
+                ) =>
             {
                 if command.defer_ephemeral(&ctx.http).await.is_err() {
                     return;
                 }
                 let action = command.data.options.first();
-                let name = if command.data.name == "join" {
-                    "join"
-                } else {
+                let name = if command.data.name == "cadence" {
                     action.map(|o| o.name.as_str()).unwrap_or("")
+                } else {
+                    command.data.name.as_str()
                 };
                 let track = action.and_then(|o| match &o.value {
                     CommandDataOptionValue::SubCommand(options) => {
                         options.first().and_then(|v| v.value.as_str())
+                    }
+                    CommandDataOptionValue::String(value) if command.data.name == "add" => {
+                        Some(value.as_str())
                     }
                     _ => None,
                 });
@@ -531,7 +562,7 @@ async fn run_session(
             _ = &mut spotify_task => { spotify_done = true; break Err(anyhow::anyhow!("Spotify connection stopped")); }
             Some(reason) = failures.recv() => { break Err(anyhow::anyhow!(reason)); }
             _ = ticker.tick() => {
-                let content = format!("**Cadence · {state}**\n{}\nUse `/join` from your voice channel. Manage songs in Spotify or use `/cadence add` and `/cadence queue`.", safe_text(&title));
+                let content = format!("**Cadence · {state}**\n{}\nUse `/join` from your voice channel. Manage songs in Spotify or use `/add` and `/queue`.", safe_text(&title));
                 if previous != content && let Some(id) = *display.lock().await {
                         match ChannelId::new(config.text_channel_id).edit_message(&http,id,EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons())).await {
                             Ok(_) => previous = content,

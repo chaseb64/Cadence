@@ -120,6 +120,27 @@ mod tests {
     use super::*;
     use std::{sync::mpsc, thread};
     #[test]
+    fn songbird_can_decode_the_live_pcm_bridge() {
+        use symphonia::core::{
+            formats::{FormatOptions, FormatReader},
+            io::{MediaSourceStream, MediaSourceStreamOptions},
+        };
+        let pipe = AudioPipe::default();
+        pipe.write_samples(&vec![0.25; 1764]).unwrap();
+        let source = songbird::input::RawAdapter::new(pipe, SAMPLE_RATE, CHANNELS);
+        let stream = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
+        let mut reader =
+            songbird::input::codecs::RawReader::try_new(stream, &FormatOptions::default()).unwrap();
+        let params = reader.default_track().unwrap().codec_params.clone();
+        let mut decoder = songbird::input::codecs::get_codec_registry()
+            .make(&params, &Default::default())
+            .expect("PCM decoder must be enabled for the live bridge");
+        let packet = reader.next_packet().unwrap();
+        let decoded = decoder.decode(&packet).unwrap();
+        assert_eq!(decoded.spec().rate, SAMPLE_RATE);
+        assert!(decoded.frames() > 0);
+    }
+    #[test]
     fn close_releases_a_blocked_producer_and_stops_output() {
         let pipe = AudioPipe::default();
         let producer = pipe.clone();

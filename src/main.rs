@@ -40,6 +40,17 @@ impl songbird::EventHandler for VoiceFailure {
         {
             return None;
         }
+        match event {
+            songbird::EventContext::DriverDisconnect(data) => {
+                tracing::warn!(reason = ?data.reason, kind = ?data.kind, "Discord voice connection failed");
+            }
+            songbird::EventContext::Track(tracks) => {
+                for (state, _) in *tracks {
+                    tracing::warn!(mode = ?state.playing, "PCM audio track failed");
+                }
+            }
+            _ => {}
+        }
         let _ = self.0.try_send("Discord voice/audio disconnected");
         None
     }
@@ -297,12 +308,12 @@ impl Handler {
                 self.provider
                     .enqueue(track.context("Supply a Spotify track link")?)
                     .await?;
-                Ok("Track added to Spotify’s queue.".into())
+                Ok("Track added to Spotifyâ€™s queue.".into())
             }
             "queue" => {
                 let tracks = self.provider.queue().await?;
                 if tracks.is_empty() {
-                    return Ok("Spotify’s upcoming queue is empty.".into());
+                    return Ok("Spotifyâ€™s upcoming queue is empty.".into());
                 }
                 Ok(tracks
                     .iter()
@@ -354,7 +365,7 @@ impl EventHandler for Handler {
                     }
                     _ => None,
                 });
-                let result = self.dispatch(&ctx, command.guild_id, command.user.id, name, track).await.unwrap_or_else(|e| format!("Couldn’t complete that request: {e}. If an add timed out, check Spotify before trying again."));
+                let result = self.dispatch(&ctx, command.guild_id, command.user.id, name, track).await.unwrap_or_else(|e| format!("Couldnâ€™t complete that request: {e}. If an add timed out, check Spotify before trying again."));
                 let _ = command
                     .edit_response(
                         &ctx.http,
@@ -487,7 +498,7 @@ async fn run_session(
             _ = &mut spotify_task => { spotify_done = true; break Err(anyhow::anyhow!("Spotify connection stopped")); }
             Some(reason) = failures.recv() => { break Err(anyhow::anyhow!(reason)); }
             _ = ticker.tick() => {
-                let content = format!("**Cadence · {state}**\n{}\nUse `/join` from your voice channel. Manage songs in Spotify or use `/cadence add` and `/cadence queue`.", safe_text(&title));
+                let content = format!("**Cadence Â· {state}**\n{}\nUse `/join` from your voice channel. Manage songs in Spotify or use `/cadence add` and `/cadence queue`.", safe_text(&title));
                 if previous != content && let Some(id) = *display.lock().await {
                         match ChannelId::new(config.text_channel_id).edit_message(&http,id,EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons())).await {
                             Ok(_) => previous = content,

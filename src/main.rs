@@ -17,19 +17,34 @@ use tokio::{
     time::{Duration, timeout},
 };
 
+#[derive(Clone)]
 struct Handler {
     config: Arc<Config>,
     provider: Arc<dyn AudioProvider>,
     pipe: AudioPipe,
-    initialized: AtomicBool,
+    initialized: Arc<AtomicBool>,
     failures: mpsc::Sender<&'static str>,
     display: Arc<Mutex<Option<MessageId>>>,
-    control_slot: Semaphore,
+    control_slot: Arc<Semaphore>,
     stopping: tokio::sync::watch::Receiver<bool>,
     requested_voice: Arc<AtomicU64>,
-    audio_started: AtomicBool,
+    audio_started: Arc<AtomicBool>,
     voice_track: Arc<std::sync::Mutex<Option<songbird::tracks::TrackHandle>>>,
     playing: Arc<AtomicBool>,
+    empty_generation: Arc<AtomicU64>,
+}
+
+fn empty_timeout_applies(
+    expected_generation: u64,
+    current_generation: u64,
+    expected_channel: u64,
+    current_channel: u64,
+    has_listener: bool,
+) -> bool {
+    expected_generation == current_generation
+        && expected_channel == current_channel
+        && current_channel != 0
+        && !has_listener
 }
 
 struct VoiceFailure(mpsc::Sender<&'static str>);
@@ -129,6 +144,7 @@ impl Handler {
             )
             .await?;
         for (name, description) in [
+            ("leave", "Leave the voice channel"),
             ("pause", "Pause Spotify"),
             ("resume", "Resume Spotify"),
             ("skip", "Skip the current song"),
@@ -277,6 +293,36 @@ impl Handler {
         tracing::info!("Discord voice joined; audible playback still needs verification");
         Ok(())
     }
+    async fn leave_voice(&self, ctx: &serenity::client::Context) -> Result<()> {
+        self.empty_generation.fetch_add(1, Ordering::SeqCst);
+        self.requested_voice.store(0, Ordering::SeqCst);
+        self.audio_started.store(false, Ordering::SeqCst);
+        *self.voice_track.lock().unwrap() = None;
+        self.pipe.clear();
+        // Leaving the voice channel should work even if Spotify is temporarily unavailable.
+        let _ = timeout(Duration::from_secs(3), self.provider.pause()).await;
+        let manager = songbird::get(ctx)
+            .await
+            .context("Voice manager unavailable")?;
+        timeout(
+            Duration::from_secs(5),
+            manager.remove(GuildId::new(self.config.guild_id)),
+        )
+        .await??;
+        Ok(())
+    }
+    fn channel_has_listener(&self, ctx: &serenity::client::Context, channel: ChannelId) -> bool {
+        let bot = ctx.cache.current_user().id;
+        ctx.cache
+            .guild(GuildId::new(self.config.guild_id))
+            .is_none_or(|guild| {
+                guild.voice_states.iter().any(|(id, state)| {
+                    *id != bot
+                        && state.channel_id == Some(channel)
+                        && guild.members.get(id).is_none_or(|member| !member.user.bot)
+                })
+            })
+    }
     fn user_voice(
         &self,
         ctx: &serenity::client::Context,
@@ -338,6 +384,10 @@ impl Handler {
             "Join Cadence's voice channel to use these controls. Use /join to bring Cadence to you"
         );
         match action {
+            "leave" => {
+                self.leave_voice(ctx).await?;
+                Ok("Left the voice channel.".into())
+            }
             "pause" => {
                 self.provider.pause().await?;
                 Ok("Pause requested.".into())
@@ -391,12 +441,57 @@ impl EventHandler for Handler {
                 .try_send("Discord setup failed; check bot permissions and channel configuration");
         }
     }
+    async fn voice_state_update(
+        &self,
+        ctx: serenity::client::Context,
+        old: Option<VoiceState>,
+        new: VoiceState,
+    ) {
+        if new.guild_id != Some(GuildId::new(self.config.guild_id)) {
+            return;
+        }
+        let channel = self.requested_voice.load(Ordering::SeqCst);
+        if channel == 0 {
+            return;
+        }
+        let channel = ChannelId::new(channel);
+        if new.channel_id != Some(channel)
+            && old.as_ref().and_then(|v| v.channel_id) != Some(channel)
+        {
+            return;
+        }
+        let generation = self.empty_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.channel_has_listener(&ctx, channel) {
+            return;
+        }
+        let handler = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let Ok(_guard) = handler.control_slot.acquire().await else {
+                return;
+            };
+            if *handler.stopping.borrow()
+                || !empty_timeout_applies(
+                    generation,
+                    handler.empty_generation.load(Ordering::SeqCst),
+                    channel.get(),
+                    handler.requested_voice.load(Ordering::SeqCst),
+                    handler.channel_has_listener(&ctx, channel),
+                )
+            {
+                return;
+            }
+            if let Err(error) = handler.leave_voice(&ctx).await {
+                tracing::warn!(%error, "Could not leave empty voice channel");
+            }
+        });
+    }
     async fn interaction_create(&self, ctx: serenity::client::Context, interaction: Interaction) {
         match interaction {
             Interaction::Command(command)
                 if matches!(
                     command.data.name.as_str(),
-                    "cadence" | "join" | "pause" | "resume" | "skip" | "queue" | "add"
+                    "cadence" | "join" | "leave" | "pause" | "resume" | "skip" | "queue" | "add"
                 ) =>
             {
                 if command.defer_ephemeral(&ctx.http).await.is_err() {
@@ -522,15 +617,16 @@ async fn run_session(
         config: config.clone(),
         provider: spotify.clone(),
         pipe: pipe.clone(),
-        initialized: AtomicBool::new(false),
+        initialized: Arc::new(AtomicBool::new(false)),
         failures: tx,
         display: display.clone(),
-        control_slot: Semaphore::new(1),
+        control_slot: Arc::new(Semaphore::new(1)),
         stopping: stopping_rx,
         requested_voice,
-        audio_started: AtomicBool::new(false),
+        audio_started: Arc::new(AtomicBool::new(false)),
         voice_track: voice_track.clone(),
         playing: playing.clone(),
+        empty_generation: Arc::new(AtomicU64::new(0)),
     };
     let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_VOICE_STATES;
     let voice_manager = songbird::Songbird::serenity();
@@ -668,5 +764,18 @@ async fn main() -> Result<()> {
         };
         tracing::info!(delay_seconds = delay, "Retrying session");
         tokio::select! { _ = tokio::time::sleep(Duration::from_secs(delay)) => {}, _ = stop_rx.changed() => { return Ok(()); } }
+    }
+}
+
+#[cfg(test)]
+mod leave_tests {
+    use super::empty_timeout_applies;
+    #[test]
+    fn only_current_empty_session_can_expire() {
+        assert!(empty_timeout_applies(3, 3, 42, 42, false));
+        assert!(!empty_timeout_applies(3, 4, 42, 42, false)); // listener returned
+        assert!(!empty_timeout_applies(3, 3, 42, 43, false)); // moved
+        assert!(!empty_timeout_applies(3, 3, 42, 0, false)); // left
+        assert!(!empty_timeout_applies(3, 3, 42, 42, true));
     }
 }

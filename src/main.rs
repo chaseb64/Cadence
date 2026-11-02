@@ -62,9 +62,12 @@ impl std::error::Error for PlaybackUnavailable {}
 #[async_trait]
 impl songbird::EventHandler for VoiceFailure {
     async fn act(&self, event: &songbird::EventContext<'_>) -> Option<songbird::Event> {
-        // Changing channels deliberately also emits a disconnect event.
+        // Songbird can report a deliberate leave as None or Requested.
         if let songbird::EventContext::DriverDisconnect(data) = event
-            && data.reason.is_none()
+            && matches!(
+                data.reason,
+                None | Some(songbird::events::context_data::DisconnectReason::Requested)
+            )
         {
             return None;
         }
@@ -97,46 +100,12 @@ impl Handler {
             text.guild_id.get() == cfg.guild_id && text.kind == ChannelType::Text,
             "Configure a normal text channel in DISCORD_GUILD_ID"
         );
-        let command = CreateCommand::new("cadence")
-            .description("Control Cadence in its voice channel")
-            .add_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "pause",
-                "Pause Spotify",
-            ))
-            .add_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "resume",
-                "Resume Spotify",
-            ))
-            .add_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "skip",
-                "Skip the current song",
-            ))
-            .add_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "queue",
-                "View up to ten upcoming songs",
-            ))
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "add",
-                    "Add a Spotify track to the shared queue",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::String,
-                        "track",
-                        "Spotify track URL or URI",
-                    )
-                    .required(true),
-                ),
-            );
-        GuildId::new(cfg.guild_id)
-            .create_command(&ctx.http, command)
-            .await?;
+        let guild = GuildId::new(cfg.guild_id);
+        for command in guild.get_commands(&ctx.http).await? {
+            if command.name == "cadence" {
+                guild.delete_command(&ctx.http, command.id).await?;
+            }
+        }
         GuildId::new(cfg.guild_id)
             .create_command(
                 &ctx.http,

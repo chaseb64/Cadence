@@ -10,7 +10,7 @@ For the Soloist integration, follow [Soloist setup](docs/soloist.md) and use `co
 
 - One Spotify Premium account, one Discord server, one listening session at a time. `/join` finds your current voice channel and joins or moves Cadence there.
 - One shared Spotify queue. Add tracks from Spotify or `/add` in Discord. `/queue` lists up to ten upcoming tracks. Removal/reordering and track-name search are outside this version.
-- One updating Discord now-playing message with pause, resume, skip, and queue buttons. Use `/leave`, `/pause`, `/resume`, `/skip`, `/queue`, and `/add` as direct commands; the older `/cadence` commands also work.
+- One updating Discord now-playing message with pause, resume, skip, and queue buttons. Use `/leave`, `/pause`, `/resume`, `/skip`, `/queue`, and `/add` as direct commands.
 - Everyone currently in Cadence's voice channel can control it. Anyone in the configured server can use `/join` to summon it to their voice channel. Other channels and DMs are rejected. Controls are serialized; concurrent requests receive a busy response.
 - Docker images for **linux/amd64**, targeting the Intel N100 UGreen DXP2800 and Portainer on standalone Docker.
 

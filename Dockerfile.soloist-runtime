@@ -1,0 +1,10 @@
+# Runtime only: Spotify's binary and the user's key are mounted privately.
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates pulseaudio \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 cadence && useradd --uid 10001 --gid 10001 --create-home cadence \
+    && mkdir /data && chown 10001:10001 /data
+USER 10001:10001
+ENV HOME=/home/cadence XDG_RUNTIME_DIR=/tmp/runtime-cadence
+ENTRYPOINT ["/bin/sh", "-ec"]
+CMD ["umask 077; mkdir -p \"$XDG_RUNTIME_DIR\"; cp /opt/soloist/soloist /tmp/soloist; chmod 700 /tmp/soloist; pulseaudio --daemonize=yes --exit-idle-time=-1 --load='module-null-sink sink_name=cadence_test'; exec /tmp/soloist --device-name 'Cadence Soloist test' --api-key \"$(cat /run/secrets/soloist_key)\" --data-dir /data --cache-dir /tmp/soloist-cache --cache-size 100"]

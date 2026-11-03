@@ -19,7 +19,7 @@ The `soloist-data` volume contains the paired session and must be treated as a c
 
 The provider serializes local commands through a bounded channel. An eight-second command timeout ends its socket/session because this protocol has no request IDs; a late reply cannot satisfy another request. Do not blindly retry timed-out queue additions. Connection/capture failures use Cadence's bounded session reconnects; exhausting the budget exits visibly with automatic container restart disabled during feasibility. Capture process arguments and logs do not contain account credentials. Soloist itself receives its key through its supported CLI argument; NAS administrators can inspect container processes.
 
-The audio gate opens only while this device is active and playing. Paused, buffering, logged-out, and transferred sessions clear queued audio. Discord tracks start paused when idle. Verify the visible Discord speaking indicator on the actual deployment; automated PCM/session tests do not prove its UI behavior.
+The audio gate opens only while this device is active and playing. When Spotify transfers away from Cadence, Cadence leaves voice after a short delay without pausing the new device. A normal pause keeps it in voice. Paused, buffering, logged-out, and transferred sessions clear queued audio. Discord tracks start paused when idle. Verify the visible Discord speaking indicator on the actual deployment; automated PCM/session tests do not prove its UI behavior.
 
 The official player does not grant permission to redistribute Spotify audio. Spotify's platform-policy restrictions still apply. Follow the [Soloist documentation](https://developer.spotify.com/documentation/soloist) and [Spotify policy](https://developer.spotify.com/policy).
 

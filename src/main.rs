@@ -32,6 +32,8 @@ struct Handler {
     voice_track: Arc<std::sync::Mutex<Option<songbird::tracks::TrackHandle>>>,
     playing: Arc<AtomicBool>,
     empty_generation: Arc<AtomicU64>,
+    device_generation: Arc<AtomicU64>,
+    voice_generation: Arc<AtomicU64>,
     context: Arc<Mutex<Option<serenity::client::Context>>>,
 }
 
@@ -46,6 +48,20 @@ fn empty_timeout_applies(
         && expected_channel == current_channel
         && current_channel != 0
         && !has_listener
+}
+
+fn transfer_leave_applies(
+    expected_device: u64,
+    current_device: u64,
+    expected_voice: u64,
+    current_voice: u64,
+    requested_voice: u64,
+    stopping: bool,
+) -> bool {
+    !stopping
+        && requested_voice != 0
+        && expected_device == current_device
+        && expected_voice == current_voice
 }
 
 struct VoiceFailure(mpsc::Sender<&'static str>);
@@ -270,6 +286,7 @@ impl Handler {
             *slot = Some(call.play_only(source));
         }
         drop(call);
+        self.voice_generation.fetch_add(1, Ordering::SeqCst);
         self.requested_voice.store(target.get(), Ordering::SeqCst);
         // The listener may have left while the voice connection was being established.
         self.check_empty_channel(ctx.clone(), target);
@@ -308,14 +325,17 @@ impl Handler {
             _ = stopping.changed() => {},
         }
     }
-    async fn leave_voice(&self, ctx: &serenity::client::Context) -> Result<()> {
+    async fn leave_voice(&self, ctx: &serenity::client::Context, pause_source: bool) -> Result<()> {
+        self.voice_generation.fetch_add(1, Ordering::SeqCst);
         self.empty_generation.fetch_add(1, Ordering::SeqCst);
         self.requested_voice.store(0, Ordering::SeqCst);
         self.audio_started.store(false, Ordering::SeqCst);
         *self.voice_track.lock().unwrap() = None;
         self.pipe.clear();
         // Leaving the voice channel should work even if Spotify is temporarily unavailable.
-        let _ = timeout(Duration::from_secs(3), self.provider.pause()).await;
+        if pause_source {
+            let _ = timeout(Duration::from_secs(3), self.provider.pause()).await;
+        }
         let manager = songbird::get(ctx)
             .await
             .context("Voice manager unavailable")?;
@@ -360,7 +380,7 @@ impl Handler {
             {
                 return;
             }
-            if let Err(error) = handler.leave_voice(&ctx).await {
+            if let Err(error) = handler.leave_voice(&ctx, true).await {
                 tracing::warn!(%error, "Could not leave empty voice channel");
             }
         });
@@ -427,7 +447,7 @@ impl Handler {
         );
         match action {
             "leave" => {
-                self.leave_voice(ctx).await?;
+                self.leave_voice(ctx, true).await?;
                 Ok("Left the voice channel.".into())
             }
             "pause" => {
@@ -652,6 +672,8 @@ async fn run_session(
         voice_track: voice_track.clone(),
         playing: playing.clone(),
         empty_generation: Arc::new(AtomicU64::new(0)),
+        device_generation: Arc::new(AtomicU64::new(0)),
+        voice_generation: Arc::new(AtomicU64::new(0)),
         context: Arc::new(Mutex::new(None)),
     };
     let auto_join_handler = handler.clone();
@@ -707,6 +729,27 @@ async fn run_session(
                     }
                     Some(PlaybackEvent::Paused) => { state = "Paused"; playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
                     Some(PlaybackEvent::Stopped) => { state = "Idle"; playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
+                    Some(PlaybackEvent::DeviceActive) => {
+                        auto_join_handler.device_generation.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Some(PlaybackEvent::DeviceInactive) => {
+                        let generation = auto_join_handler.device_generation.fetch_add(1, Ordering::SeqCst) + 1;
+                        let voice_generation = auto_join_handler.voice_generation.load(Ordering::SeqCst);
+                        if let Some(ctx) = auto_join_handler.context.lock().await.clone() {
+                            let handler = auto_join_handler.clone();
+                            tokio::spawn(async move {
+                                // Give a rapid transfer back to Cadence a chance to cancel this leave.
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                let Ok(_permit) = handler.control_slot.acquire().await else { return; };
+                                if !transfer_leave_applies(generation, handler.device_generation.load(Ordering::SeqCst),
+                                    voice_generation, handler.voice_generation.load(Ordering::SeqCst),
+                                    handler.requested_voice.load(Ordering::SeqCst), *handler.stopping.borrow()) { return; }
+                                if let Err(error) = handler.leave_voice(&ctx, false).await {
+                                    tracing::warn!(%error, "Could not leave voice after Spotify transferred away");
+                                }
+                            });
+                        }
+                    }
                     Some(PlaybackEvent::Unavailable) => {
                         pipe.clear();
                         let _ = spotify.pause().await;
@@ -804,7 +847,15 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod leave_tests {
-    use super::empty_timeout_applies;
+    use super::{empty_timeout_applies, transfer_leave_applies};
+    #[test]
+    fn stale_transfer_cannot_disconnect_a_reactivated_or_rejoined_session() {
+        assert!(transfer_leave_applies(1, 1, 2, 2, 42, false));
+        assert!(!transfer_leave_applies(1, 2, 2, 2, 42, false));
+        assert!(!transfer_leave_applies(1, 1, 2, 3, 42, false));
+        assert!(!transfer_leave_applies(1, 1, 2, 2, 0, false));
+        assert!(!transfer_leave_applies(1, 1, 2, 2, 42, true));
+    }
     #[test]
     fn only_current_empty_session_can_expire() {
         assert!(empty_timeout_applies(3, 3, 42, 42, false));

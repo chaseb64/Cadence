@@ -7,6 +7,8 @@ pub enum PlaybackEvent {
     Playing,
     Paused,
     Stopped,
+    DeviceActive,
+    DeviceInactive,
     Unavailable,
 }
 

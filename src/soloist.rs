@@ -49,6 +49,11 @@ struct Playback {
     playing: bool,
 }
 impl Playback {
+    fn activity_change(&mut self, value: &Value) -> (bool, Option<bool>) {
+        let before = self.active;
+        let playing = self.update(value);
+        (playing, (before != self.active).then_some(self.active))
+    }
     fn update(&mut self, value: &Value) -> bool {
         if let Some(active) = value.get("is_active").and_then(Value::as_bool) {
             self.active = active;
@@ -160,7 +165,8 @@ impl Soloist {
                         };
                         let kind = value["type"].as_str().unwrap_or_default();
                         if matches!(kind, "playback_state" | "playback_changed" | "device_changed" | "auth_state") {
-                            let playing = state.update(&value);
+                            let (playing, activity) = state.activity_change(&value);
+                            if let Some(active) = activity && events.send(if active { PlaybackEvent::DeviceActive } else { PlaybackEvent::DeviceInactive }).await.is_err() { break; }
                             enabled.store(playing, Ordering::SeqCst);
                             if !playing { pipe.clear(); }
                             if events.send(if playing { PlaybackEvent::Playing } else { PlaybackEvent::Paused }).await.is_err() { break; }
@@ -247,6 +253,42 @@ mod tests {
         assert!(!state.update(&json!({"status":"buffering"})));
         assert!(state.update(&json!({"status":"playing"})));
         assert!(!state.update(&json!({"logged_in":false})));
+    }
+    #[test]
+    fn pause_does_not_transfer_device_but_deactivation_and_logout_do() {
+        let mut state = Playback::default();
+        assert_eq!(
+            state.activity_change(&json!({"is_active":false,"status":"paused"})),
+            (false, None)
+        );
+        assert_eq!(
+            state.activity_change(&json!({"is_active":true,"status":"playing"})),
+            (true, Some(true))
+        );
+        assert_eq!(
+            state.activity_change(&json!({"status":"paused"})),
+            (false, None)
+        );
+        assert_eq!(
+            state.activity_change(&json!({"status":"buffering"})),
+            (false, None)
+        );
+        assert_eq!(
+            state.activity_change(&json!({"is_active":false})),
+            (false, Some(false))
+        );
+        assert_eq!(
+            state.activity_change(&json!({"is_active":false})),
+            (false, None)
+        );
+        assert_eq!(
+            state.activity_change(&json!({"is_active":true,"status":"playing"})),
+            (true, Some(true))
+        );
+        assert_eq!(
+            state.activity_change(&json!({"logged_in":false})),
+            (false, Some(false))
+        );
     }
     #[test]
     fn queue_titles_use_documented_entity_shape() {

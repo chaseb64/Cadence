@@ -724,21 +724,10 @@ async fn run_session(
                 let timer = now_playing.timer(now);
                 let details = [artist, timer].into_iter().flatten().collect::<Vec<_>>().join(" · ");
                 let content = format!("**Cadence · {state}**\n{}{}\nUse `/join` from your voice channel. Manage songs in Spotify or use `/add` and `/queue`.", safe_text(title), if details.is_empty() { String::new() } else { format!("\n{details}") });
-                let artwork = track.and_then(|t| t.artwork_url.as_ref());
-                let link = track.and_then(|t| t.spotify_url.as_ref());
-                let signature = format!("{content}\n{:?}\n{:?}", artwork, link);
-                if previous != signature && let Some(id) = *display.lock().await {
-                    let mut message = EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons()).embeds(Vec::new());
-                    if let (Some(art), Some(url)) = (artwork, link) {
-                        message = message.embeds(vec![CreateEmbed::new().title("Open in Spotify").url(url).thumbnail(art)]);
-                    }
+                if previous != content && let Some(id) = *display.lock().await {
+                    let message = EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons()).embeds(Vec::new());
                     match ChannelId::new(config.text_channel_id).edit_message(&http,id,message).await {
-                        Ok(_) => previous = signature,
-                        Err(_) if artwork.is_some() => {
-                            let fallback = EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons()).embeds(Vec::new());
-                            if ChannelId::new(config.text_channel_id).edit_message(&http,id,fallback).await.is_ok() { previous = signature; }
-                            tracing::warn!("Album artwork could not be displayed; check Embed Links permission");
-                        }
+                        Ok(_) => previous = content,
                         Err(_) => tracing::warn!("Now-playing update failed; will retry"),
                     }
                 }

@@ -13,7 +13,7 @@ Cadence uses the official Soloist engine as an independent source. The public im
 
 This Compose uses Linux host networking for Spotify LAN discovery. The unauthenticated WebSocket binds **127.0.0.1:9090 only**; never change it to 0.0.0.0, publish it, or tunnel it. Other processes on the NAS can access loopback. PulseAudio uses a local per-user Unix socket; no sound hardware or privileged container is required. The root filesystem is read-only; temporary storage and memory are bounded. `init: true` reaps child processes. Stopping the container terminates Cadence, Soloist, and PulseAudio.
 
-Cadence updates its Discord listening status and now-playing timer about every 15 seconds, including after a seek or pause. Album artwork appears in the now-playing message when Spotify provides it and the bot has **Embed Links** permission. Bot accounts cannot put rich-presence artwork or a native progress bar in their profile activity; the message links back to the Spotify track.
+Cadence updates its Discord listening status and now-playing timer about every 15 seconds, including after a seek or pause. The text-channel control message is edited in place and does not display album artwork. Bot accounts cannot put rich-presence artwork or a native progress bar in their profile activity.
 
 The `soloist-data` volume contains the paired session and must be treated as a credential. Keep it private and preserve it when replacing images. For the existing feasibility deployment, explicitly map this volume to `cadence-soloist-test_soloist-test-data` as an external volume to retain pairing. The Discord display volume can similarly retain its existing external volume.
 

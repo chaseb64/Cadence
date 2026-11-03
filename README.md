@@ -10,7 +10,7 @@ For the Soloist integration, follow [Soloist setup](docs/soloist.md) and use `co
 
 - One Spotify Premium account, one Discord server, one listening session at a time. `/join` finds your current voice channel and joins or moves Cadence there.
 - One shared Spotify queue. Add tracks from Spotify or `/add` in Discord. `/queue` lists up to ten upcoming tracks. Removal/reordering and track-name search are outside this version.
-- A Discord listening status with the current song and an elapsed/total timer refreshed about every 15 seconds. The now-playing message includes artist, timer, album artwork when available, a Spotify link, and pause, resume, skip, and queue buttons. Use `/leave`, `/pause`, `/resume`, `/skip`, `/queue`, and `/add` as direct commands.
+- A Discord listening status with the current song and an elapsed/total timer refreshed about every 15 seconds. One now-playing message is edited in place with artist, timer, and pause, resume, skip, and queue buttons. Use `/leave`, `/pause`, `/resume`, `/skip`, `/queue`, and `/add` as direct commands.
 - Everyone currently in Cadence's voice channel can control it. Anyone in the configured server can use `/join` to summon it to their voice channel. Other channels and DMs are rejected. Controls are serialized; concurrent requests receive a busy response.
 - Docker images for **linux/amd64**, targeting the Intel N100 UGreen DXP2800 and Portainer on standalone Docker.
 
@@ -26,7 +26,7 @@ The librespot provider requests 320 kbps source audio. Soloist manages its own s
 
 ### 1. Discord
 
-Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications). Invite it with `bot` and `applications.commands` scopes. Grant View Channel, Connect, Speak, Send Messages, Embed Links (for artwork), Read Message History, and Use Application Commands as appropriate. No privileged intents or Message Content intent are needed. Never use a user token.
+Create an application and bot in the [Discord Developer Portal](https://discord.com/developers/applications). Invite it with `bot` and `applications.commands` scopes. Grant View Channel, Connect, Speak, Send Messages, Read Message History, and Use Application Commands as appropriate. No privileged intents or Message Content intent are needed. Never use a user token.
 
 Choose one **normal text channel** for now-playing messages. Cadence joins a **normal voice channel** when you use `/join`. Stages and threads are outside this version. Enable Discord Developer Mode to copy the server ID and now-playing text-channel ID. No voice-channel ID is required. Give the bot View Channel, Connect, and Speak permissions in any voice channel where you plan to summon it. Store the bot token in a private file named `discord-token`, containing only the token. Do not put it in GitHub, Compose, or chat.
 

@@ -3,7 +3,7 @@ use cadence::{
     audio::{AudioPipe, CHANNELS, SAMPLE_RATE, SOLOIST_SAMPLE_RATE},
     config::Config,
     provider::{AudioProvider, PlaybackEvent},
-    session::{Session, can_control, join_target},
+    session::{Session, auto_join_target, can_control, join_target},
     spotify::Spotify,
 };
 use serenity::{all::*, async_trait};
@@ -32,6 +32,7 @@ struct Handler {
     voice_track: Arc<std::sync::Mutex<Option<songbird::tracks::TrackHandle>>>,
     playing: Arc<AtomicBool>,
     empty_generation: Arc<AtomicU64>,
+    context: Arc<Mutex<Option<serenity::client::Context>>>,
 }
 
 fn empty_timeout_applies(
@@ -270,8 +271,42 @@ impl Handler {
         }
         drop(call);
         self.requested_voice.store(target.get(), Ordering::SeqCst);
-        tracing::info!("Discord voice joined; audible playback still needs verification");
+        // The listener may have left while the voice connection was being established.
+        self.check_empty_channel(ctx.clone(), target);
+        tracing::info!("Discord voice joined");
         Ok(())
+    }
+    async fn auto_join(&self, ctx: &serenity::client::Context) {
+        let Some(user_id) = self.config.auto_join_user_id else {
+            return;
+        };
+        let mut stopping = self.stopping.clone();
+        let permit = tokio::select! {
+            permit = self.control_slot.acquire() => match permit { Ok(p) => p, Err(_) => return },
+            _ = stopping.changed() => return,
+        };
+        let _permit = permit;
+        if *stopping.borrow() {
+            return;
+        }
+        let guild = GuildId::new(self.config.guild_id);
+        let Some(manager) = songbird::get(ctx).await else {
+            return;
+        };
+        let Some(target) = auto_join_target(
+            self.playing.load(Ordering::SeqCst),
+            self.requested_voice.load(Ordering::SeqCst),
+            manager.get(guild).is_some(),
+            self.user_voice(ctx, Some(guild), UserId::new(user_id)),
+        ) else {
+            return;
+        };
+        tokio::select! {
+            result = self.connect_voice(ctx, ChannelId::new(target)) => {
+                if let Err(error) = result { tracing::warn!(%error, "Automatic voice join failed"); }
+            },
+            _ = stopping.changed() => {},
+        }
     }
     async fn leave_voice(&self, ctx: &serenity::client::Context) -> Result<()> {
         self.empty_generation.fetch_add(1, Ordering::SeqCst);
@@ -302,6 +337,33 @@ impl Handler {
                         && guild.members.get(id).is_none_or(|member| !member.user.bot)
                 })
             })
+    }
+    fn check_empty_channel(&self, ctx: serenity::client::Context, channel: ChannelId) {
+        let generation = self.empty_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.channel_has_listener(&ctx, channel) {
+            return;
+        }
+        let handler = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let Ok(_guard) = handler.control_slot.acquire().await else {
+                return;
+            };
+            if *handler.stopping.borrow()
+                || !empty_timeout_applies(
+                    generation,
+                    handler.empty_generation.load(Ordering::SeqCst),
+                    channel.get(),
+                    handler.requested_voice.load(Ordering::SeqCst),
+                    handler.channel_has_listener(&ctx, channel),
+                )
+            {
+                return;
+            }
+            if let Err(error) = handler.leave_voice(&ctx).await {
+                tracing::warn!(%error, "Could not leave empty voice channel");
+            }
+        });
     }
     fn user_voice(
         &self,
@@ -414,6 +476,13 @@ impl EventHandler for Handler {
             return;
         }
         let result = tokio::select! { result = self.setup(&ctx) => result, _ = stopping.changed() => { return; } };
+        if result.is_ok() {
+            *self.context.lock().await = Some(ctx.clone());
+            if self.playing.load(Ordering::SeqCst) {
+                let handler = self.clone();
+                tokio::spawn(async move { handler.auto_join(&ctx).await });
+            }
+        }
         if let Err(error) = result {
             tracing::error!(%error, "Discord setup failed");
             let _ = self
@@ -440,31 +509,7 @@ impl EventHandler for Handler {
         {
             return;
         }
-        let generation = self.empty_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        if self.channel_has_listener(&ctx, channel) {
-            return;
-        }
-        let handler = self.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            let Ok(_guard) = handler.control_slot.acquire().await else {
-                return;
-            };
-            if *handler.stopping.borrow()
-                || !empty_timeout_applies(
-                    generation,
-                    handler.empty_generation.load(Ordering::SeqCst),
-                    channel.get(),
-                    handler.requested_voice.load(Ordering::SeqCst),
-                    handler.channel_has_listener(&ctx, channel),
-                )
-            {
-                return;
-            }
-            if let Err(error) = handler.leave_voice(&ctx).await {
-                tracing::warn!(%error, "Could not leave empty voice channel");
-            }
-        });
+        self.check_empty_channel(ctx, channel);
     }
     async fn interaction_create(&self, ctx: serenity::client::Context, interaction: Interaction) {
         match interaction {
@@ -607,7 +652,9 @@ async fn run_session(
         voice_track: voice_track.clone(),
         playing: playing.clone(),
         empty_generation: Arc::new(AtomicU64::new(0)),
+        context: Arc::new(Mutex::new(None)),
     };
+    let auto_join_handler = handler.clone();
     let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_VOICE_STATES;
     let voice_manager = songbird::Songbird::serenity();
     let client_result = tokio::select! {
@@ -649,7 +696,15 @@ async fn run_session(
             event = events.recv() => {
                 match event {
                     Some(PlaybackEvent::Track { name }) => { title = name; }
-                    Some(PlaybackEvent::Playing) => { state = "Playing"; playing.store(true, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.play(); } tracing::info!("Spotify reports playing; confirm audibility in Discord"); }
+                    Some(PlaybackEvent::Playing) => {
+                        state = "Playing";
+                        let was_playing = playing.swap(true, Ordering::SeqCst);
+                        if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.play(); }
+                        if !was_playing && let Some(ctx) = auto_join_handler.context.lock().await.clone() {
+                            let handler = auto_join_handler.clone();
+                            tokio::spawn(async move { handler.auto_join(&ctx).await });
+                        }
+                    }
                     Some(PlaybackEvent::Paused) => { state = "Paused"; playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
                     Some(PlaybackEvent::Stopped) => { state = "Idle"; playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
                     Some(PlaybackEvent::Unavailable) => {

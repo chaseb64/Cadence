@@ -79,6 +79,20 @@ impl Session {
     }
 }
 
+/// An automatic join never moves an existing session or acts while playback is idle.
+pub fn auto_join_target(
+    playing: bool,
+    requested_voice: u64,
+    connected: bool,
+    owner_voice: Option<u64>,
+) -> Option<u64> {
+    if playing && requested_voice == 0 && !connected {
+        owner_voice.filter(|channel| *channel != 0)
+    } else {
+        None
+    }
+}
+
 pub fn can_control(
     configured_guild: u64,
     bot_voice: Option<u64>,
@@ -189,5 +203,18 @@ mod tests {
         assert!(join_target(1, Some(1), None).is_err());
         assert!(join_target(1, None, Some(2)).is_err());
         assert!(join_target(1, Some(7), Some(2)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod auto_join_tests {
+    use super::auto_join_target;
+    #[test]
+    fn joins_only_the_configured_owners_current_channel_when_idle_and_playing() {
+        assert_eq!(auto_join_target(true, 0, false, Some(42)), Some(42));
+        assert_eq!(auto_join_target(true, 0, false, None), None);
+        assert_eq!(auto_join_target(false, 0, false, Some(42)), None);
+        assert_eq!(auto_join_target(true, 11, true, Some(42)), None);
+        assert_eq!(auto_join_target(true, 0, true, Some(42)), None);
     }
 }

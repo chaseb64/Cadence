@@ -10,6 +10,7 @@ pub struct Config {
     pub spotify_auth_file: PathBuf,
     pub device_name: String,
     pub soloist: bool,
+    pub auto_join_user_id: Option<u64>,
 }
 
 pub fn snowflake(name: &str, value: &str) -> Result<u64> {
@@ -45,7 +46,13 @@ impl Config {
             matches!(provider.as_str(), "soloist" | "librespot"),
             "CADENCE_PROVIDER must be soloist or librespot"
         );
+        let auto_join_user_id = env::var("CADENCE_AUTO_JOIN_USER_ID")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| snowflake("CADENCE_AUTO_JOIN_USER_ID", &value))
+            .transpose()?;
         Ok(Self {
+            auto_join_user_id,
             soloist: provider == "soloist",
             discord_token,
             guild_id: id("DISCORD_GUILD_ID")?,

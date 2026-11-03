@@ -2,7 +2,7 @@
 //! The unauthenticated WebSocket must remain on loopback.
 use crate::{
     audio::AudioPipe,
-    provider::{AudioProvider, PlaybackEvent},
+    provider::{AudioProvider, PlaybackEvent, TrackInfo},
     spotify::track_uri,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -39,6 +39,66 @@ fn title(item: &Value) -> String {
         .or_else(|| item.get("uri").and_then(Value::as_str))
         .unwrap_or("Unknown track")
         .to_owned()
+}
+
+fn track_info(item: &Value) -> TrackInfo {
+    let artist = item
+        .pointer("/decorations/creators")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            let names: Vec<&str> = items
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .pointer("/entity/decorations/identity/name")
+                        .and_then(Value::as_str)
+                })
+                .take(3)
+                .collect();
+            (!names.is_empty()).then(|| names.join(", "))
+        });
+    let spotify_url = item
+        .get("uri")
+        .and_then(Value::as_str)
+        .and_then(|uri| uri.strip_prefix("spotify:track:"))
+        .filter(|id| id.len() == 22 && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .map(|id| format!("https://open.spotify.com/track/{id}"));
+    let artwork_url = item
+        .pointer("/decorations/visual_identity/cover")
+        .and_then(Value::as_array)
+        .and_then(|covers| {
+            covers
+                .iter()
+                .filter_map(|cover| cover.get("url").and_then(Value::as_str))
+                .find(|url| {
+                    reqwest::Url::parse(url).is_ok_and(|url| {
+                        url.scheme() == "https" && url.host_str() == Some("i.scdn.co")
+                    })
+                })
+        })
+        .filter(|_| spotify_url.is_some())
+        .map(str::to_owned);
+    TrackInfo {
+        name: title(item),
+        artist,
+        duration_ms: item
+            .pointer("/decorations/playback/duration_ms")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0 && *v <= 86_400_000),
+        artwork_url,
+        spotify_url,
+    }
+}
+fn position_event(value: &Value) -> Option<PlaybackEvent> {
+    let p = value.get("position")?;
+    let position_ms = p.get("position_ms")?.as_u64()?;
+    let timestamp_ms = p.get("timestamp_ms")?.as_u64()?;
+    let speed = p.get("speed")?.as_f64()?;
+    (speed.is_finite() && (0.0..=4.0).contains(&speed)).then_some(PlaybackEvent::Position {
+        position_ms,
+        timestamp_ms,
+        speed,
+    })
 }
 
 // Incremental updates must retain active-device ownership: a remote device playing
@@ -172,7 +232,10 @@ impl Soloist {
                             if events.send(if playing { PlaybackEvent::Playing } else { PlaybackEvent::Paused }).await.is_err() { break; }
                         }
                         if matches!(kind, "track_changed" | "playback_state") && value.get("item").is_some_and(Value::is_object)
-                            && events.send(PlaybackEvent::Track { name: title(&value["item"]) }).await.is_err() { break; }
+                            && events.send(PlaybackEvent::Track(track_info(&value["item"]))).await.is_err() { break; }
+                        if matches!(kind, "position_sync" | "playback_state")
+                            && let Some(position) = position_event(&value)
+                            && events.send(position).await.is_err() { break; }
                         if let Some((command, _)) = &pending {
                             let matched = kind == "error" || (kind == "command_result" && value["command"] == *command) || (command == "get_queue" && kind == "queue_changed");
                             if matched {
@@ -288,6 +351,45 @@ mod tests {
         assert_eq!(
             state.activity_change(&json!({"logged_in":false})),
             (false, Some(false))
+        );
+    }
+    #[test]
+    fn parses_track_artwork_and_timing_from_soloist() {
+        let id = "6rqhFgbbKwnb9MLmUQDhG6";
+        let item = json!({"uri":format!("spotify:track:{id}"),"decorations":{
+            "identity":{"name":"Song"},
+            "creators":[{"entity":{"decorations":{"identity":{"name":"Artist"}}}}],
+            "playback":{"duration_ms":183000},
+            "visual_identity":{"cover":[{"url":"https://i.scdn.co/image/example","size":"large"}]}
+        }});
+        let track = track_info(&item);
+        assert_eq!(track.artist.as_deref(), Some("Artist"));
+        assert_eq!(track.duration_ms, Some(183000));
+        assert_eq!(
+            track.artwork_url.as_deref(),
+            Some("https://i.scdn.co/image/example")
+        );
+        assert_eq!(
+            track.spotify_url.as_deref(),
+            Some(format!("https://open.spotify.com/track/{id}").as_str())
+        );
+        let mut bad = item.clone();
+        bad["decorations"]["visual_identity"]["cover"][0]["url"] =
+            json!("https://i.scdn.co.attacker.example/image");
+        assert_eq!(track_info(&bad).artwork_url, None);
+        assert!(matches!(
+            position_event(
+                &json!({"position":{"position_ms":500,"timestamp_ms":1000,"speed":1.0}})
+            ),
+            Some(PlaybackEvent::Position {
+                position_ms: 500,
+                timestamp_ms: 1000,
+                ..
+            })
+        ));
+        assert!(
+            position_event(&json!({"position":{"position_ms":500,"timestamp_ms":1000,"speed":-1}}))
+                .is_none()
         );
     }
     #[test]

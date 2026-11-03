@@ -1,6 +1,6 @@
 //! Experimental provider. Spotify remains the authority for playback and its queue.
 use crate::audio::AudioPipe;
-use crate::provider::{AudioProvider, PlaybackEvent};
+use crate::provider::{AudioProvider, PlaybackEvent, TrackInfo};
 use crate::session::Cancellation;
 use anyhow::{Context, Result, bail, ensure};
 use async_trait::async_trait;
@@ -200,9 +200,12 @@ impl Spotify {
             let forward = async move {
                 while let Some(event) = events.recv().await {
                     let event = match event {
-                        PlayerEvent::TrackChanged { audio_item } => PlaybackEvent::Track {
-                            name: audio_item.name,
-                        },
+                        PlayerEvent::TrackChanged { audio_item } => {
+                            PlaybackEvent::Track(TrackInfo {
+                                name: audio_item.name,
+                                ..Default::default()
+                            })
+                        }
                         PlayerEvent::Playing { .. } => PlaybackEvent::Playing,
                         PlayerEvent::Paused { .. } => PlaybackEvent::Paused,
                         PlayerEvent::Stopped { .. } => PlaybackEvent::Stopped,

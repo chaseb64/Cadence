@@ -2,8 +2,22 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct TrackInfo {
+    pub name: String,
+    pub artist: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub artwork_url: Option<String>,
+    pub spotify_url: Option<String>,
+}
+
 pub enum PlaybackEvent {
-    Track { name: String },
+    Track(TrackInfo),
+    Position {
+        position_ms: u64,
+        timestamp_ms: u64,
+        speed: f64,
+    },
     Playing,
     Paused,
     Stopped,

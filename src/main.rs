@@ -2,10 +2,12 @@ use anyhow::{Context as _, Result, bail};
 use cadence::{
     audio::{AudioPipe, CHANNELS, SAMPLE_RATE, SOLOIST_SAMPLE_RATE},
     config::Config,
+    now_playing::NowPlaying,
     provider::{AudioProvider, PlaybackEvent},
     session::{Session, auto_join_target, can_control, join_target},
     spotify::Spotify,
 };
+use serenity::gateway::ActivityData;
 use serenity::{all::*, async_trait};
 use songbird::{SerenityInit, input::RawAdapter};
 use std::sync::{
@@ -694,8 +696,10 @@ async fn run_session(
     let http = client.http.clone();
     let shards = client.shard_manager.clone();
     let mut discord_task = tokio::spawn(async move { client.start().await });
-    let mut ticker = tokio::time::interval(Duration::from_secs(5));
-    let mut title = "Waiting for Spotify".to_owned();
+    // Discord allows at most five presence updates per 20 seconds.
+    let mut ticker = tokio::time::interval(Duration::from_secs(15));
+    let mut now_playing = NowPlaying::default();
+    let mut previous_activity: Option<Option<String>> = None;
     let mut state = "Idle";
     let mut previous = String::new();
     let mut discord_done = false;
@@ -707,19 +711,48 @@ async fn run_session(
             _ = &mut spotify_task => { spotify_done = true; break Err(anyhow::anyhow!("Spotify connection stopped")); }
             Some(reason) = failures.recv() => { break Err(anyhow::anyhow!(reason)); }
             _ = ticker.tick() => {
-                let content = format!("**Cadence · {state}**\n{}\nUse `/join` from your voice channel. Manage songs in Spotify or use `/add` and `/queue`.", safe_text(&title));
-                if previous != content && let Some(id) = *display.lock().await {
-                        match ChannelId::new(config.text_channel_id).edit_message(&http,id,EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons())).await {
-                            Ok(_) => previous = content,
-                            Err(_) => tracing::warn!("Now-playing update failed; will retry"),
+                let now = std::time::Instant::now();
+                let activity = now_playing.activity(now);
+                if previous_activity.as_ref() != Some(&activity)
+                    && let Some(ctx) = auto_join_handler.context.lock().await.as_ref() {
+                    ctx.set_activity(activity.clone().map(ActivityData::listening));
+                    previous_activity = Some(activity);
+                }
+                let track = now_playing.track.as_ref();
+                let title = track.map_or("Waiting for Spotify", |t| t.name.as_str());
+                let artist = track.and_then(|t| t.artist.as_deref()).map(safe_text);
+                let timer = now_playing.timer(now);
+                let details = [artist, timer].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                let content = format!("**Cadence · {state}**\n{}{}\nUse `/join` from your voice channel. Manage songs in Spotify or use `/add` and `/queue`.", safe_text(title), if details.is_empty() { String::new() } else { format!("\n{details}") });
+                let artwork = track.and_then(|t| t.artwork_url.as_ref());
+                let link = track.and_then(|t| t.spotify_url.as_ref());
+                let signature = format!("{content}\n{:?}\n{:?}", artwork, link);
+                if previous != signature && let Some(id) = *display.lock().await {
+                    let mut message = EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons()).embeds(Vec::new());
+                    if let (Some(art), Some(url)) = (artwork, link) {
+                        message = message.embeds(vec![CreateEmbed::new().title("Open in Spotify").url(url).thumbnail(art)]);
+                    }
+                    match ChannelId::new(config.text_channel_id).edit_message(&http,id,message).await {
+                        Ok(_) => previous = signature,
+                        Err(_) if artwork.is_some() => {
+                            let fallback = EditMessage::new().content(&content).allowed_mentions(CreateAllowedMentions::new()).components(buttons()).embeds(Vec::new());
+                            if ChannelId::new(config.text_channel_id).edit_message(&http,id,fallback).await.is_ok() { previous = signature; }
+                            tracing::warn!("Album artwork could not be displayed; check Embed Links permission");
                         }
+                        Err(_) => tracing::warn!("Now-playing update failed; will retry"),
+                    }
                 }
             }
             event = events.recv() => {
                 match event {
-                    Some(PlaybackEvent::Track { name }) => { title = name; }
+                    Some(PlaybackEvent::Track(track)) => { now_playing.track(track); }
+                    Some(PlaybackEvent::Position { position_ms, timestamp_ms, speed }) => {
+                        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis().min(u64::MAX as u128) as u64;
+                        now_playing.position(position_ms, timestamp_ms, speed, now_ms, std::time::Instant::now());
+                    }
                     Some(PlaybackEvent::Playing) => {
                         state = "Playing";
+                        now_playing.set_running(true, std::time::Instant::now());
                         let was_playing = playing.swap(true, Ordering::SeqCst);
                         if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.play(); }
                         if !was_playing && let Some(ctx) = auto_join_handler.context.lock().await.clone() {
@@ -727,12 +760,14 @@ async fn run_session(
                             tokio::spawn(async move { handler.auto_join(&ctx).await });
                         }
                     }
-                    Some(PlaybackEvent::Paused) => { state = "Paused"; playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
-                    Some(PlaybackEvent::Stopped) => { state = "Idle"; playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
+                    Some(PlaybackEvent::Paused) => { state = if now_playing.track.is_some() { "Paused" } else { "Idle" }; now_playing.set_running(false, std::time::Instant::now()); playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
+                    Some(PlaybackEvent::Stopped) => { state = "Idle"; now_playing.clear(); playing.store(false, Ordering::SeqCst); if let Some(track) = voice_track.lock().unwrap().as_ref() { let _ = track.pause(); } pipe.clear(); }
                     Some(PlaybackEvent::DeviceActive) => {
                         auto_join_handler.device_generation.fetch_add(1, Ordering::SeqCst);
                     }
                     Some(PlaybackEvent::DeviceInactive) => {
+                        now_playing.clear();
+                        state = "Idle";
                         let generation = auto_join_handler.device_generation.fetch_add(1, Ordering::SeqCst) + 1;
                         let voice_generation = auto_join_handler.voice_generation.load(Ordering::SeqCst);
                         if let Some(ctx) = auto_join_handler.context.lock().await.clone() {
@@ -778,6 +813,7 @@ async fn run_session(
                     .content(if result.as_ref().is_err_and(|e| e.is::<PlaybackUnavailable>()) {
                         "**Cadence · Playback stopped**\nSpotify could not load this track. Cadence stopped to limit further skips; inspect the logs and restart after resolving the source problem."
                     } else { "Cadence is offline or reconnecting." })
+                    .embeds(Vec::new())
                     .components(Vec::new()),
             ),
         )

@@ -80,7 +80,7 @@ impl Soloist {
             .args([
                 "--raw",
                 "--format=float32le",
-                "--rate=44100",
+                "--rate=48000",
                 "--channels=2",
                 "--device=cadence_test.monitor",
                 "--latency-msec=40",

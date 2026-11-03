@@ -1,6 +1,6 @@
 # Soloist on Docker / Portainer
 
-Cadence uses the official Soloist engine as an independent source. The public image contains PulseAudio and the Cadence bridge, **not Spotify's binary or your key**. Soloist's local WebSocket controls playback and queue; the monitor captures stereo float32 PCM at 44.1 kHz. No audio files are recorded. The bridge holds at most one second, drains while paused, and cancels capture on shutdown.
+Cadence uses the official Soloist engine as an independent source. The public image contains PulseAudio and the Cadence bridge, **not Spotify's binary or your key**. Soloist's local WebSocket controls playback and queue; the monitor captures stereo float32 PCM at 48 kHz (PulseAudio converts the source as needed). No audio files are recorded. The bridge holds at most one second, drains while paused, and cancels capture on shutdown.
 
 ## Setup
 

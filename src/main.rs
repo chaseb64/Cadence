@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result, bail};
 use cadence::{
-    audio::{AudioPipe, CHANNELS, SAMPLE_RATE},
+    audio::{AudioPipe, CHANNELS, SAMPLE_RATE, SOLOIST_SAMPLE_RATE},
     config::Config,
     provider::{AudioProvider, PlaybackEvent},
     session::{Session, can_control, join_target},
@@ -252,7 +252,16 @@ impl Handler {
             // Configure before enqueueing: a play-then-pause command can emit audio first.
             let mut slot = self.voice_track.lock().unwrap();
             let mut source = songbird::tracks::Track::new(
-                RawAdapter::new(self.pipe.clone(), SAMPLE_RATE, CHANNELS).into(),
+                RawAdapter::new(
+                    self.pipe.clone(),
+                    if self.config.soloist {
+                        SOLOIST_SAMPLE_RATE
+                    } else {
+                        SAMPLE_RATE
+                    },
+                    CHANNELS,
+                )
+                .into(),
             );
             if !self.playing.load(Ordering::SeqCst) {
                 source = source.pause();

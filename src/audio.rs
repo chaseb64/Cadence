@@ -8,8 +8,9 @@ use std::{
 use symphonia::core::io::MediaSource;
 
 pub const SAMPLE_RATE: u32 = 44_100;
+pub const SOLOIST_SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: u32 = 2;
-const CAPACITY: usize = SAMPLE_RATE as usize * CHANNELS as usize * 4;
+const CAPACITY: usize = SOLOIST_SAMPLE_RATE as usize * CHANNELS as usize * 4;
 
 #[derive(Default)]
 struct State {
@@ -88,7 +89,7 @@ impl Read for AudioPipe {
             return Ok(0);
         }
         if s.bytes.is_empty() {
-            // Silence on underrun, never end-of-stream. Limit to 20ms of audio.
+            // Silence on underrun, never end-of-stream. Limit to at most 20ms of audio.
             let n = out.len().min(7056);
             out[..n].fill(0);
             return Ok(n);
@@ -125,30 +126,34 @@ mod tests {
             formats::{FormatOptions, FormatReader},
             io::{MediaSourceStream, MediaSourceStreamOptions},
         };
-        let pipe = AudioPipe::default();
-        // Distinct left and right samples must survive the actual Songbird decoder.
-        let stereo: Vec<f64> = (0..1764)
-            .map(|i| if i % 2 == 0 { 0.25 } else { -0.5 })
-            .collect();
-        pipe.write_samples(&stereo).unwrap();
-        let source = songbird::input::RawAdapter::new(pipe, SAMPLE_RATE, CHANNELS);
-        let stream = MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
-        let mut reader =
-            songbird::input::codecs::RawReader::try_new(stream, &FormatOptions::default()).unwrap();
-        let params = reader.default_track().unwrap().codec_params.clone();
-        let mut decoder = songbird::input::codecs::get_codec_registry()
-            .make(&params, &Default::default())
-            .expect("PCM decoder must be enabled for the live bridge");
-        let packet = reader.next_packet().unwrap();
-        let decoded = decoder.decode(&packet).unwrap();
-        assert_eq!(decoded.spec().rate, SAMPLE_RATE);
-        assert!(decoded.frames() > 0);
-        if let symphonia::core::audio::AudioBufferRef::F32(samples) = decoded {
-            use symphonia::core::audio::Signal;
-            assert_eq!(samples.chan(0)[0], 0.25);
-            assert_eq!(samples.chan(1)[0], -0.5);
-        } else {
-            panic!("expected floating-point PCM");
+        for rate in [SAMPLE_RATE, SOLOIST_SAMPLE_RATE] {
+            let pipe = AudioPipe::default();
+            // Distinct left and right samples must survive the actual Songbird decoder.
+            let stereo: Vec<f64> = (0..1764)
+                .map(|i| if i % 2 == 0 { 0.25 } else { -0.5 })
+                .collect();
+            pipe.write_samples(&stereo).unwrap();
+            let source = songbird::input::RawAdapter::new(pipe, rate, CHANNELS);
+            let stream =
+                MediaSourceStream::new(Box::new(source), MediaSourceStreamOptions::default());
+            let mut reader =
+                songbird::input::codecs::RawReader::try_new(stream, &FormatOptions::default())
+                    .unwrap();
+            let params = reader.default_track().unwrap().codec_params.clone();
+            let mut decoder = songbird::input::codecs::get_codec_registry()
+                .make(&params, &Default::default())
+                .expect("PCM decoder must be enabled for the live bridge");
+            let packet = reader.next_packet().unwrap();
+            let decoded = decoder.decode(&packet).unwrap();
+            assert_eq!(decoded.spec().rate, rate);
+            assert!(decoded.frames() > 0);
+            if let symphonia::core::audio::AudioBufferRef::F32(samples) = decoded {
+                use symphonia::core::audio::Signal;
+                assert_eq!(samples.chan(0)[0], 0.25);
+                assert_eq!(samples.chan(1)[0], -0.5);
+            } else {
+                panic!("expected floating-point PCM");
+            }
         }
     }
     #[test]
